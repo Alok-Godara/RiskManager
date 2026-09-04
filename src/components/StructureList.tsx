@@ -4,15 +4,20 @@ import { fmtMoney, pnlClass } from "../utils/format";
 export function StructureList({
   snapshots,
   onSelect,
+  onNewStructure,
 }: {
   snapshots: StructureSnapshot[];
   onSelect: (id: string) => void;
+  onNewStructure: () => void;
 }) {
   const sorted = [...snapshots].sort((a, b) => (a.structure.status === "Fully Closed" ? 1 : 0) - (b.structure.status === "Fully Closed" ? 1 : 0));
 
   return (
     <div className="panel">
-      <h2>Structures</h2>
+      <div className="panel-header">
+        <h2>Structures</h2>
+        <button onClick={onNewStructure}>+ New Structure</button>
+      </div>
       <table className="data-table">
         <thead>
           <tr>
@@ -46,7 +51,7 @@ export function StructureList({
           {sorted.length === 0 && (
             <tr>
               <td colSpan={8} className="muted">
-                No structures yet — create one below.
+                No structures yet — click + New Structure above.
               </td>
             </tr>
           )}

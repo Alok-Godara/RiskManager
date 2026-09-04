@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
-import type { StructureSnapshot, LegSide } from "../types/domain";
-import { StructureEngine } from "../engines/StructureEngine";
+import type { StructureSnapshot, Execution } from "../types/domain";
 import { RiskEngine } from "../engines/RiskEngine";
 import { repository } from "../data";
 import { fmtMoney, fmtPrice, pnlClass } from "../utils/format";
+import { IconChevronLeft } from "./icons";
+import { AddEntryModal } from "./AddEntryModal";
+import { ExitModal } from "./ExitModal";
+import { EditExecutionModal } from "./EditExecutionModal";
 
 export function StructureDetail({
   snapshot,
@@ -15,79 +18,57 @@ export function StructureDetail({
   onChanged: () => void;
 }) {
   const { structure, legs } = snapshot;
-  const [entryLegId, setEntryLegId] = useState(legs[0]?.leg.id ?? "");
-  const [entrySide, setEntrySide] = useState<LegSide>("Long");
-  const [entryQty, setEntryQty] = useState(1);
-  const [entryPrice, setEntryPrice] = useState(0);
-  const [entryRisk, setEntryRisk] = useState<number | "">("");
-
-  const [exitLegId, setExitLegId] = useState(legs[0]?.leg.id ?? "");
-  const [exitQty, setExitQty] = useState(1);
-  const [exitPrice, setExitPrice] = useState(0);
 
   const [allocatedRisk, setAllocatedRisk] = useState(0);
-  const [structureAudit, setStructureAudit] = useState<Awaited<ReturnType<typeof repository.getAuditEvents>>>([]);
+  const [executions, setExecutions] = useState<Execution[]>([]);
+  const [showAddEntry, setShowAddEntry] = useState(false);
+  const [showExit, setShowExit] = useState(false);
+  const [editingExecution, setEditingExecution] = useState<Execution | null>(null);
 
   useEffect(() => {
     RiskEngine.totalAllocatedRisk(structure.id).then(setAllocatedRisk);
-    repository.getAuditEvents().then((all) =>
-      setStructureAudit(all.filter((a) => a.structure_id === structure.id))
-    );
-  }, [structure.id, snapshot]);
-
-  const activeLegs = legs.filter((l) => l.leg.is_active);
-
-  async function handleAddEntry(e: React.FormEvent) {
-    e.preventDefault();
-    if (!entryLegId || entryQty <= 0 || entryPrice <= 0) return;
-    await StructureEngine.addEntry({
-      structure_id: structure.id,
-      structure_leg_id: entryLegId,
-      side: entrySide,
-      quantity: entryQty,
-      price: entryPrice,
-      risk_allocated: entryRisk === "" ? undefined : Number(entryRisk),
+    Promise.all(legs.map((l) => repository.getExecutionsByLeg(l.leg.id))).then((lists) => {
+      const merged = lists.flat().sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+      setExecutions(merged);
     });
-    setEntryQty(1);
-    setEntryPrice(0);
-    setEntryRisk("");
-    onChanged();
-  }
+  }, [structure.id, snapshot, legs]);
 
-  async function handleExit(type: "PartialExit" | "LegExit" | "FinalExit") {
-    if (!exitLegId || exitQty <= 0 || exitPrice <= 0) return;
-    await StructureEngine.exitLeg({
-      structure_id: structure.id,
-      structure_leg_id: exitLegId,
-      quantity: exitQty,
-      price: exitPrice,
-      execution_type: type,
-    });
-    setExitQty(1);
-    setExitPrice(0);
+  const contractLabelByLeg = Object.fromEntries(legs.map((l) => [l.leg.id, l.contract.month_label]));
+  const hasOpenLegs = legs.some((l) => l.leg.is_active && l.position.net_quantity !== 0);
+
+  function handleChanged() {
     onChanged();
   }
 
   return (
     <div className="panel">
-      <button className="secondary" onClick={onBack}>
-        ← Back to structures
+      <button className="secondary back-button" onClick={onBack}>
+        <IconChevronLeft size={14} /> Back to structures
       </button>
-      <h2>
-        {structure.name} <span className={`badge badge-${structure.status.replace(/\s/g, "").toLowerCase()}`}>{structure.status}</span>
-      </h2>
+      <div className="panel-header">
+        <h2>
+          {structure.name}{" "}
+          <span className={`badge badge-${structure.status.replace(/\s/g, "").toLowerCase()}`}>{structure.status}</span>
+        </h2>
+        <div className="button-row">
+          <button onClick={() => setShowAddEntry(true)}>+ Add Entry</button>
+          <button className="secondary" style={{ marginBottom: 0 }} onClick={() => setShowExit(true)} disabled={!hasOpenLegs}>
+            Exit / Reduce
+          </button>
+        </div>
+      </div>
 
       <div className="card-grid">
         <div className="stat-card">
-          <div className="stat-label">Realized P&L</div>
+          <div className="stat-label">Realized P&amp;L</div>
           <div className={`stat-value ${pnlClass(snapshot.total_realized_pnl)}`}>{fmtMoney(snapshot.total_realized_pnl)}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Unrealized P&L</div>
+          <div className="stat-label">Unrealized P&amp;L</div>
           <div className={`stat-value ${pnlClass(snapshot.total_unrealized_pnl)}`}>{fmtMoney(snapshot.total_unrealized_pnl)}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Total P&L</div>
+          <div className="stat-label">Total P&amp;L</div>
           <div className={`stat-value ${pnlClass(snapshot.total_pnl)}`}>{fmtMoney(snapshot.total_pnl)}</div>
         </div>
         <div className="stat-card">
@@ -108,11 +89,11 @@ export function StructureDetail({
       <table className="data-table">
         <thead>
           <tr>
-            <th>Contract</th>
+            <th>Leg (traded product)</th>
             <th>Ratio</th>
             <th>Net Qty</th>
             <th>Avg Price</th>
-            <th>Current Price</th>
+            <th>Live Price</th>
             <th>Unrealized</th>
             <th>Realized</th>
             <th>Status</th>
@@ -122,7 +103,7 @@ export function StructureDetail({
           {legs.map((l) => (
             <tr key={l.leg.id}>
               <td>{l.contract.month_label}</td>
-              <td>{l.leg.ratio}</td>
+              <td className={l.leg.ratio >= 0 ? "pnl-pos" : "pnl-neg"}>{l.leg.ratio >= 0 ? `+${l.leg.ratio}` : l.leg.ratio}</td>
               <td>{l.position.net_quantity}</td>
               <td>{fmtPrice(l.position.average_price)}</td>
               <td>{fmtPrice(l.current_price)}</td>
@@ -134,91 +115,64 @@ export function StructureDetail({
         </tbody>
       </table>
 
-      <div className="two-col">
-        <div>
-          <h3>Add Entry</h3>
-          <form onSubmit={handleAddEntry} className="form">
-            <div className="form-row">
-              <label>Leg</label>
-              <select value={entryLegId} onChange={(e) => setEntryLegId(e.target.value)}>
-                {legs.map((l) => (
-                  <option key={l.leg.id} value={l.leg.id}>
-                    {l.contract.month_label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="form-row">
-              <label>Side</label>
-              <select value={entrySide} onChange={(e) => setEntrySide(e.target.value as LegSide)}>
-                <option value="Long">Long</option>
-                <option value="Short">Short</option>
-              </select>
-            </div>
-            <div className="form-row">
-              <label>Quantity (lots)</label>
-              <input type="number" value={entryQty} onChange={(e) => setEntryQty(Number(e.target.value))} />
-            </div>
-            <div className="form-row">
-              <label>Price</label>
-              <input type="number" step="0.01" value={entryPrice} onChange={(e) => setEntryPrice(Number(e.target.value))} />
-            </div>
-            <div className="form-row">
-              <label>Risk Allocated ($, optional)</label>
-              <input
-                type="number"
-                value={entryRisk}
-                onChange={(e) => setEntryRisk(e.target.value === "" ? "" : Number(e.target.value))}
-              />
-            </div>
-            <button type="submit">Add Entry</button>
-          </form>
-        </div>
+      <h3>Executions</h3>
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Contract</th>
+            <th>Type</th>
+            <th>Side</th>
+            <th>Qty</th>
+            <th>Price</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {executions.map((ex) => (
+            <tr key={ex.id} className={ex.status === "Edited" ? "execution-edited" : ex.status === "Deleted" ? "execution-deleted" : ""}>
+              <td>{new Date(ex.timestamp).toLocaleString()}</td>
+              <td>{contractLabelByLeg[ex.structure_leg_id] ?? "—"}</td>
+              <td>{ex.execution_type}</td>
+              <td className={ex.side === "Long" ? "pnl-pos" : "pnl-neg"}>{ex.side}</td>
+              <td>{ex.quantity}</td>
+              <td>{fmtPrice(ex.price)}</td>
+              <td>{ex.status}</td>
+              <td>
+                {ex.status === "Active" && (
+                  <div className="inline-actions">
+                    <button type="button" onClick={() => setEditingExecution(ex)}>
+                      Edit
+                    </button>
+                  </div>
+                )}
+              </td>
+            </tr>
+          ))}
+          {executions.length === 0 && (
+            <tr>
+              <td colSpan={8} className="muted">
+                No executions yet — click Add Entry above.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
 
-        <div>
-          <h3>Exit</h3>
-          <form className="form" onSubmit={(e) => e.preventDefault()}>
-            <div className="form-row">
-              <label>Leg</label>
-              <select value={exitLegId} onChange={(e) => setExitLegId(e.target.value)}>
-                {activeLegs.map((l) => (
-                  <option key={l.leg.id} value={l.leg.id}>
-                    {l.contract.month_label} (net {l.position.net_quantity})
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="form-row">
-              <label>Quantity (lots)</label>
-              <input type="number" value={exitQty} onChange={(e) => setExitQty(Number(e.target.value))} />
-            </div>
-            <div className="form-row">
-              <label>Exit Price</label>
-              <input type="number" step="0.01" value={exitPrice} onChange={(e) => setExitPrice(Number(e.target.value))} />
-            </div>
-            <div className="button-row">
-              <button type="button" onClick={() => handleExit("PartialExit")}>
-                Partial Exit
-              </button>
-              <button type="button" onClick={() => handleExit("LegExit")}>
-                Full Leg Exit
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-      <h3>Structure Audit Trail</h3>
-      <ul className="audit-list">
-        {structureAudit.map((a) => (
-          <li key={a.id}>
-            <span className="audit-time">{new Date(a.timestamp).toLocaleString()}</span>
-            <span className="audit-type">{a.event_type}</span>
-            <span>{a.description}</span>
-          </li>
-        ))}
-        {structureAudit.length === 0 && <li className="muted">No events yet.</li>}
-      </ul>
+      {showAddEntry && (
+        <AddEntryModal snapshot={snapshot} onClose={() => setShowAddEntry(false)} onSaved={handleChanged} />
+      )}
+      {showExit && <ExitModal snapshot={snapshot} onClose={() => setShowExit(false)} onSaved={handleChanged} />}
+      {editingExecution && (
+        <EditExecutionModal
+          execution={editingExecution}
+          structureId={structure.id}
+          legs={legs}
+          onClose={() => setEditingExecution(null)}
+          onSaved={handleChanged}
+        />
+      )}
     </div>
   );
 }

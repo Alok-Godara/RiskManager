@@ -1,12 +1,21 @@
 import { LocalRepository } from "./LocalRepository";
+import { SupabaseRepository } from "./SupabaseRepository";
+import { isSupabaseConfigured } from "./supabase/client";
 import type { DataRepository } from "./DataRepository";
 
 // -----------------------------------------------------------------------
 // SINGLE SWAP POINT.
-// When moving to Supabase, implement `SupabaseRepository implements
-// DataRepository` and change this one line. Nothing else in the app
-// (engines, services, UI) needs to change.
+//
+// If VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY are set (see .env.example),
+// the app talks to Supabase/Postgres. Otherwise it falls back to the local
+// IndexedDB repository so the app keeps working with zero setup.
+//
+// Nothing else in the app (engines, services, UI) needs to change either
+// way — everything talks to the `DataRepository` interface only.
 // -----------------------------------------------------------------------
-export const repository: DataRepository = new LocalRepository();
+export const repository: DataRepository = isSupabaseConfigured
+  ? new SupabaseRepository()
+  : new LocalRepository();
 
+export const isCloudConfigured = isSupabaseConfigured;
 export type { DataRepository };

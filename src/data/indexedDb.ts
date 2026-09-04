@@ -3,11 +3,12 @@
 // mechanics stay isolated from the DataRepository contract.
 
 const DB_NAME = "risk_manager_db";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export const STORES = [
   "instruments",
   "contracts",
+  "structure_templates",
   "structures",
   "structure_legs",
   "executions",
@@ -76,6 +77,36 @@ export async function putOne<T extends object>(
     } else {
       tx.objectStore(store).put(value);
     }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function deleteOne(store: StoreName, id: string): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, "readwrite");
+    tx.objectStore(store).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** Delete every record in `store` matching `predicate`. Used for the small
+ * number of "delete by foreign key" needs (realized P&L / risk allocation
+ * regeneration) without maintaining dedicated IndexedDB indexes. */
+export async function deleteWhere<T extends { id: string }>(
+  store: StoreName,
+  predicate: (row: T) => boolean
+): Promise<void> {
+  const rows = await getAll<T>(store);
+  const db = await openDb();
+  const toDelete = rows.filter(predicate);
+  if (toDelete.length === 0) return;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, "readwrite");
+    const objStore = tx.objectStore(store);
+    for (const row of toDelete) objStore.delete(row.id);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

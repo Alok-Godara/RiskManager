@@ -20,6 +20,8 @@ export type ExecutionType =
 export type AuditEventType =
   | "StructureCreated"
   | "EntryAdded"
+  | "EntryEdited"
+  | "EntryDeleted"
   | "PositionIncreased"
   | "PositionReduced"
   | "SpreadClosed"
@@ -29,7 +31,12 @@ export type AuditEventType =
   | "RiskModified"
   | "RealizedProfitBooked"
   | "FinalExit"
-  | "PriceUpdated";
+  | "PriceUpdated"
+  | "InstrumentCreated"
+  | "InstrumentUpdated"
+  | "StructureTemplateCreated"
+  | "StructureTemplateUpdated"
+  | "StructureTemplateDeleted";
 
 // ---------------------------------------------------------------------------
 // Instrument: e.g. Brent (BZ), WTI (CL), WBS
@@ -38,36 +45,85 @@ export interface Instrument {
   id: UUID;
   symbol: string; // e.g. "BZ", "CL", "WBS"
   name: string; // e.g. "Brent Crude"
+  exchange_code?: string; // exchange/API symbol if different from `symbol`
   tick_size: number;
   tick_value: number; // $ value per tick per lot
   lot_size: number; // barrels/units per lot
   currency: string;
+  is_active: boolean; // only active instruments appear in structure creation
+  notes?: string;
   created_at: string;
 }
 
 // ---------------------------------------------------------------------------
-// Contract: a specific delivery month of an instrument, e.g. Brent Jan26
+// Contract: a priceable, quotable product for an instrument. Two kinds:
+//   - "Outright" (default/undefined for back-compat): a single delivery
+//     month, e.g. Brent Jan26.
+//   - "Structure": a multi-month spread/fly product that the exchange
+//     quotes directly as one thing (e.g. "Jan26 Fly"), auto-created the
+//     first time a structure trades it. `quote_template_id` + `anchor_
+//     contract_id` record what it represents (which template shape,
+//     anchored where) so its outright decomposition can still be computed
+//     on demand for the true contract-exposure view — but pricing/P&L for
+//     the structure itself uses THIS contract's own live quote directly,
+//     never synthesized from outright legs (spec V4: track the trade at
+//     the actual base structure used for execution).
 // ---------------------------------------------------------------------------
+export type ContractKind = "Outright" | "Structure";
+
 export interface Contract {
   id: UUID;
   instrument_id: UUID;
   code: string; // e.g. "BZ-JAN26"
-  month_label: string; // e.g. "Jan26"
-  expiry_date?: string;
+  month_label: string; // display label, e.g. "Jan26" or "Jan26 Fly"
+  expiry_date?: string; // Outright: reference date. Structure: its anchor's reference date.
   market_data_symbol?: string; // symbol used to query the Market Data Service
+  created_at: string;
+  kind?: ContractKind; // undefined = "Outright"
+  quote_template_id?: UUID; // Structure only: which template shape this quote represents
+  anchor_contract_id?: UUID; // Structure only: the front/reference month it's anchored at
+}
+
+// ---------------------------------------------------------------------------
+// StructureTemplate: a reusable, user-defined recipe — the FIXED, fully
+// expanded signed outright ratio pattern for a structure shape (e.g. Fly =
+// +1 / -2 / +1, Double Fly = +1 / -3 / +3 / -1). Templates are the ONLY way
+// structure "types" are defined now — nothing is hard-coded (spec V2
+// section 5).
+//
+// How a structure is actually CONSTRUCTED/TRADED (as raw outrights, as
+// spreads, as flies, ...) is a separate, per-trade choice made at
+// structure-creation time (the "Base Structure"), NOT baked into the
+// template — see engines/StructureQuoteEngine.ts and utils/decompose.ts,
+// which deconvolve this pattern into shifted copies of whatever base
+// structure's own pattern was chosen (spec V5).
+// ---------------------------------------------------------------------------
+export interface StructureTemplateLeg {
+  label: string; // placeholder shown before a contract is picked, e.g. "Month 1"
+  ratio: number; // signed: +1 = long 1 unit, -2 = short 2 units
+  month_offset: number; // months forward from the structure's single anchor contract
+}
+
+export interface StructureTemplate {
+  id: UUID;
+  name: string; // e.g. "Fly", "Calendar Spread", "Outright", "Double Fly"
+  code?: string; // short code, optional
+  legs: StructureTemplateLeg[];
+  is_active: boolean;
   created_at: string;
 }
 
 // ---------------------------------------------------------------------------
 // Structure: the central risk-management unit (outright, spread, fly, etc.)
+// `structure_type` is free text (usually the template name at creation time)
+// since types are now user-defined via StructureTemplate, not hard-coded.
 // ---------------------------------------------------------------------------
-export type StructureType = "Outright" | "Spread" | "Fly" | "Custom";
-
 export interface Structure {
   id: UUID;
   instrument_id: UUID;
+  structure_template_id?: UUID; // undefined for ad-hoc/custom structures
   name: string; // e.g. "Jan-Feb-Mar Fly"
-  structure_type: StructureType;
+  structure_type: string;
   status: StructureStatus;
   initial_dollar_risk: number;
   current_dollar_risk: number; // adjusted for booked profit
@@ -85,6 +141,11 @@ export interface Structure {
 export interface StructureLeg {
   id: UUID;
   structure_id: UUID;
+  // The tradeable unit this leg represents, at whatever level it was
+  // actually traded — an outright month OR a structure-level quote (e.g.
+  // "Jan26 Fly"). See Contract.kind. Never further decomposed for
+  // pricing/P&L; ratio is relative to 1 structure lot of the top-level
+  // structure.
   contract_id: UUID;
   ratio: number; // signed weight relative to 1 structure unit, e.g. +1, -2, +1
   side: LegSide; // derived convenience field for the leg's net side at ratio>0 baseline
@@ -93,9 +154,16 @@ export interface StructureLeg {
 }
 
 // ---------------------------------------------------------------------------
-// Execution: an individual entry or exit against a leg
-// The complete, immutable audit trail of fills.
+// Execution: an individual entry or exit against a leg.
+//
+// Executions are never destructively edited or deleted — rows are only ever
+// added or soft-transitioned via `status` (spec V2 section 9: "Original
+// Entry -> Edited Entry", never silent deletion). `getExecutionsByLeg`
+// returns the full history for audit display; engines filter to
+// `status === "Active"` when recomputing positions/P&L.
 // ---------------------------------------------------------------------------
+export type ExecutionStatus = "Active" | "Edited" | "Deleted";
+
 export interface Execution {
   id: UUID;
   structure_leg_id: UUID;
@@ -107,6 +175,11 @@ export interface Execution {
   max_adverse_ticks?: number;
   timestamp: string;
   notes?: string;
+
+  status: ExecutionStatus;
+  edited_from_execution_id?: UUID; // set on the replacement row
+  edited_to_execution_id?: UUID; // set on the original row once superseded
+  edit_reason?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,10 +1,11 @@
 import type { DataRepository } from "./DataRepository";
-import { getAll, getOne, putOne, clearStore, STORES } from "./indexedDb";
+import { getAll, getOne, putOne, deleteOne, deleteWhere, clearStore, STORES } from "./indexedDb";
 import type {
   Instrument,
   Contract,
   Structure,
   StructureLeg,
+  StructureTemplate,
   Execution,
   Position,
   MarketPrice,
@@ -34,6 +35,14 @@ export class LocalRepository implements DataRepository {
   async upsertInstrument(instrument: Instrument) {
     return putOne("instruments", instrument);
   }
+  async deleteInstrument(id: UUID) {
+    const structures = await getAll<Structure>("structures");
+    if (structures.some((s) => s.instrument_id === id)) {
+      throw new Error("Cannot delete: this instrument is used by one or more structures. Deactivate it instead.");
+    }
+    await deleteWhere<Contract>("contracts", (c) => c.instrument_id === id);
+    await deleteOne("instruments", id);
+  }
 
   // Contracts
   async getContracts() {
@@ -48,6 +57,20 @@ export class LocalRepository implements DataRepository {
   }
   async upsertContract(contract: Contract) {
     return putOne("contracts", contract);
+  }
+
+  // Structure Templates
+  async getStructureTemplates() {
+    return getAll<StructureTemplate>("structure_templates");
+  }
+  async getStructureTemplate(id: UUID) {
+    return getOne<StructureTemplate>("structure_templates", id);
+  }
+  async upsertStructureTemplate(template: StructureTemplate) {
+    return putOne("structure_templates", template);
+  }
+  async deleteStructureTemplate(id: UUID) {
+    return deleteOne("structure_templates", id);
   }
 
   // Structures
@@ -116,8 +139,15 @@ export class LocalRepository implements DataRepository {
   async getRealizedPnLEvents() {
     return getAll<RealizedPnLEvent>("realized_pnl_events");
   }
+  async getRealizedPnLEventsByLeg(legId: UUID) {
+    const all = await getAll<RealizedPnLEvent>("realized_pnl_events");
+    return all.filter((r) => r.structure_leg_id === legId);
+  }
   async addRealizedPnLEvent(event: RealizedPnLEvent) {
     return putOne("realized_pnl_events", event);
+  }
+  async deleteRealizedPnLEventsByLeg(legId: UUID) {
+    return deleteWhere<RealizedPnLEvent>("realized_pnl_events", (r) => r.structure_leg_id === legId);
   }
 
   // Risk Allocations
@@ -130,6 +160,9 @@ export class LocalRepository implements DataRepository {
   }
   async addRiskAllocation(allocation: RiskAllocation) {
     return putOne("risk_allocations", allocation);
+  }
+  async deleteRiskAllocationsByExecution(executionId: UUID) {
+    return deleteWhere<RiskAllocation>("risk_allocations", (r) => r.execution_id === executionId);
   }
 
   // Stop Loss History

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { repository } from "../data";
 import { seedIfEmpty } from "../data/seed";
+import { runMigrations } from "../data/migrate";
 import { MarketDataService } from "../services/MarketDataService";
 import { PnLEngine } from "../engines/PnLEngine";
 import { PortfolioEngine } from "../engines/PortfolioEngine";
@@ -8,6 +9,7 @@ import type {
   Instrument,
   Contract,
   Structure,
+  StructureTemplate,
   StructureSnapshot,
   PortfolioSummary,
   AuditEvent,
@@ -16,6 +18,7 @@ import type {
 export function useRiskManagerData() {
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [contracts, setContracts] = useState<Contract[]>([]);
+  const [templates, setTemplates] = useState<StructureTemplate[]>([]);
   const [structures, setStructures] = useState<Structure[]>([]);
   const [snapshots, setSnapshots] = useState<StructureSnapshot[]>([]);
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
@@ -23,9 +26,10 @@ export function useRiskManagerData() {
   const [loading, setLoading] = useState(true);
 
   const reload = useCallback(async () => {
-    const [inst, cons, structs, snaps, summary, audit] = await Promise.all([
+    const [inst, cons, tmpl, structs, snaps, summary, audit] = await Promise.all([
       repository.getInstruments(),
       repository.getContracts(),
+      repository.getStructureTemplates(),
       repository.getStructures(),
       PnLEngine.buildAllStructureSnapshots(),
       PortfolioEngine.buildSummary(),
@@ -33,6 +37,7 @@ export function useRiskManagerData() {
     ]);
     setInstruments(inst);
     setContracts(cons);
+    setTemplates(tmpl);
     setStructures(structs);
     setSnapshots(snaps);
     setPortfolio(summary);
@@ -43,6 +48,7 @@ export function useRiskManagerData() {
   useEffect(() => {
     let unsub: (() => void) | undefined;
     (async () => {
+      await runMigrations();
       await seedIfEmpty();
       await reload();
 
@@ -67,5 +73,20 @@ export function useRiskManagerData() {
     };
   }, [reload]);
 
-  return { instruments, contracts, structures, snapshots, portfolio, auditEvents, loading, reload };
+  const activeInstruments = instruments.filter((i) => i.is_active);
+  const activeTemplates = templates.filter((t) => t.is_active);
+
+  return {
+    instruments,
+    activeInstruments,
+    contracts,
+    templates,
+    activeTemplates,
+    structures,
+    snapshots,
+    portfolio,
+    auditEvents,
+    loading,
+    reload,
+  };
 }

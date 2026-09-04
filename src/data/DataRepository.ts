@@ -3,6 +3,7 @@ import type {
   Contract,
   Structure,
   StructureLeg,
+  StructureTemplate,
   Execution,
   Position,
   MarketPrice,
@@ -28,12 +29,21 @@ export interface DataRepository {
   getInstruments(): Promise<Instrument[]>;
   getInstrument(id: UUID): Promise<Instrument | undefined>;
   upsertInstrument(instrument: Instrument): Promise<void>;
+  // Throws if the instrument is still referenced by any structure — caller
+  // should catch and tell the user to deactivate instead of delete.
+  deleteInstrument(id: UUID): Promise<void>;
 
   // Contracts
   getContracts(): Promise<Contract[]>;
   getContractsByInstrument(instrumentId: UUID): Promise<Contract[]>;
   getContract(id: UUID): Promise<Contract | undefined>;
   upsertContract(contract: Contract): Promise<void>;
+
+  // Structure Templates
+  getStructureTemplates(): Promise<StructureTemplate[]>;
+  getStructureTemplate(id: UUID): Promise<StructureTemplate | undefined>;
+  upsertStructureTemplate(template: StructureTemplate): Promise<void>;
+  deleteStructureTemplate(id: UUID): Promise<void>;
 
   // Structures
   getStructures(): Promise<Structure[]>;
@@ -46,7 +56,8 @@ export interface DataRepository {
   getLeg(id: UUID): Promise<StructureLeg | undefined>;
   upsertLeg(leg: StructureLeg): Promise<void>;
 
-  // Executions
+  // Executions (addExecution is an upsert-by-id — used both to add a new
+  // execution and to flip an existing one's `status` when it's edited/deleted)
   getExecutionsByLeg(legId: UUID): Promise<Execution[]>;
   getAllExecutions(): Promise<Execution[]>;
   addExecution(execution: Execution): Promise<void>;
@@ -61,14 +72,18 @@ export interface DataRepository {
   getMarketPrice(contractId: UUID): Promise<MarketPrice | undefined>;
   upsertMarketPrice(price: MarketPrice): Promise<void>;
 
-  // Realized P&L Events
+  // Realized P&L Events (regenerated wholesale for a leg whenever its
+  // execution history changes, e.g. on entry edit/delete)
   getRealizedPnLEvents(): Promise<RealizedPnLEvent[]>;
+  getRealizedPnLEventsByLeg(legId: UUID): Promise<RealizedPnLEvent[]>;
   addRealizedPnLEvent(event: RealizedPnLEvent): Promise<void>;
+  deleteRealizedPnLEventsByLeg(legId: UUID): Promise<void>;
 
   // Risk Allocations
   getRiskAllocations(): Promise<RiskAllocation[]>;
   getRiskAllocationsByStructure(structureId: UUID): Promise<RiskAllocation[]>;
   addRiskAllocation(allocation: RiskAllocation): Promise<void>;
+  deleteRiskAllocationsByExecution(executionId: UUID): Promise<void>;
 
   // Stop Loss History
   getStopLossHistory(structureId: UUID): Promise<StopLossRecord[]>;

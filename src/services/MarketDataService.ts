@@ -26,8 +26,12 @@ export class SimulatedProvider implements MarketDataProvider {
     const out: Record<string, number> = {};
     for (const symbol of symbols) {
       const base = this.lastPrices[symbol] ?? this.seedPrice(symbol);
-      const drift = (Math.random() - 0.5) * 0.06; // small random walk
-      const next = Math.round((base + drift) * 100) / 100;
+      // Structure quotes (spreads/flies) trade in a much tighter range than
+      // outrights — scale the random walk to roughly 1% of the seed price
+      // either way, so simulated fly/spread prices stay plausibly small.
+      const driftScale = Math.max(Math.abs(base) * 0.01, 0.002);
+      const drift = (Math.random() - 0.5) * 2 * driftScale;
+      const next = Math.round((base + drift) * 1000) / 1000;
       this.lastPrices[symbol] = next;
       out[symbol] = next;
     }
@@ -38,6 +42,15 @@ export class SimulatedProvider implements MarketDataProvider {
     // Deterministic-ish seed so different contracts don't all start equal
     let hash = 0;
     for (let i = 0; i < symbol.length; i++) hash = (hash * 31 + symbol.charCodeAt(i)) % 1000;
+
+    // Our own generated symbols are "SYMBOL-MONTH" for outrights (2 parts)
+    // vs "SYMBOL-CODE-MONTH" for structure-level quotes (3 parts, see
+    // StructureQuoteEngine) — use that to seed a realistically small
+    // spread/fly price instead of an outright-sized one.
+    const isStructureQuote = symbol.split("-").length >= 3;
+    if (isStructureQuote) {
+      return Math.round(((hash % 200) / 100 - 1) * 100) / 100; // ~ -1.00 .. +1.00
+    }
     return 60 + (hash % 40); // ~60-100 range, plausible for crude
   }
 }
