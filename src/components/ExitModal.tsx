@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { v4 as uuid } from "uuid";
 import type { StructureSnapshot } from "../types/domain";
 import { StructureEngine } from "../engines/StructureEngine";
 import { Modal } from "./Modal";
@@ -36,6 +37,7 @@ export function ExitModal({
     setError("");
     setSaving(true);
     try {
+      const exitGroupId = uuid();
       for (const leg of legs) {
         const qty = closeQtyFor(leg);
         if (qty <= 0) continue;
@@ -45,6 +47,7 @@ export function ExitModal({
           structure_leg_id: leg.leg.id,
           quantity: qty,
           price,
+          entry_group_id: exitGroupId,
         });
       }
       onSaved();

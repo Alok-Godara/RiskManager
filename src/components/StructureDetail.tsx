@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
-import type { StructureSnapshot, Execution } from "../types/domain";
+import type { StructureSnapshot, Execution, EntrySnapshot } from "../types/domain";
 import { RiskEngine } from "../engines/RiskEngine";
+import { EntryEngine } from "../engines/EntryEngine";
 import { repository } from "../data";
 import { fmtMoney, fmtPrice, pnlClass } from "../utils/format";
 import { IconChevronLeft } from "./icons";
 import { AddEntryModal } from "./AddEntryModal";
 import { ExitModal } from "./ExitModal";
+import { EditEntryModal } from "./EditEntryModal";
 import { EditExecutionModal } from "./EditExecutionModal";
 
 export function StructureDetail({
@@ -20,16 +22,24 @@ export function StructureDetail({
   const { structure, legs } = snapshot;
 
   const [allocatedRisk, setAllocatedRisk] = useState(0);
-  const [executions, setExecutions] = useState<Execution[]>([]);
+  const [entries, setEntries] = useState<EntrySnapshot[]>([]);
+  const [otherExecutions, setOtherExecutions] = useState<Execution[]>([]);
   const [showAddEntry, setShowAddEntry] = useState(false);
   const [showExit, setShowExit] = useState(false);
+  const [editingEntry, setEditingEntry] = useState<EntrySnapshot | null>(null);
   const [editingExecution, setEditingExecution] = useState<Execution | null>(null);
 
   useEffect(() => {
     RiskEngine.totalAllocatedRisk(structure.id).then(setAllocatedRisk);
+    EntryEngine.buildEntrySnapshots(snapshot).then(setEntries);
     Promise.all(legs.map((l) => repository.getExecutionsByLeg(l.leg.id))).then((lists) => {
-      const merged = lists.flat().sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-      setExecutions(merged);
+      // Entry-type executions get their own aggregated "Entries" table above
+      // (see EntryEngine) — this table is exits + any non-Active history.
+      const merged = lists
+        .flat()
+        .filter((e) => e.execution_type !== "Entry")
+        .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+      setOtherExecutions(merged);
     });
   }, [structure.id, snapshot, legs]);
 
@@ -115,55 +125,99 @@ export function StructureDetail({
         </tbody>
       </table>
 
-      <h3>Executions</h3>
+      <h3>Entries</h3>
       <table className="data-table">
         <thead>
           <tr>
-            <th>Time</th>
-            <th>Contract</th>
-            <th>Type</th>
-            <th>Side</th>
-            <th>Qty</th>
-            <th>Price</th>
-            <th>Status</th>
+            <th>Date &amp; Time</th>
+            <th>Avg Entry Price</th>
+            <th>Risk Allocated</th>
+            <th>Stop Loss (Price)</th>
+            <th>Unrealized P&amp;L</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
-          {executions.map((ex) => (
-            <tr key={ex.id} className={ex.status === "Edited" ? "execution-edited" : ex.status === "Deleted" ? "execution-deleted" : ""}>
-              <td>{new Date(ex.timestamp).toLocaleString()}</td>
-              <td>{contractLabelByLeg[ex.structure_leg_id] ?? "—"}</td>
-              <td>{ex.execution_type}</td>
-              <td className={ex.side === "Long" ? "pnl-pos" : "pnl-neg"}>{ex.side}</td>
-              <td>{ex.quantity}</td>
-              <td>{fmtPrice(ex.price)}</td>
-              <td>{ex.status}</td>
+          {entries.map((en) => (
+            <tr key={en.entry_group_id}>
+              <td>{new Date(en.timestamp).toLocaleString()}</td>
+              <td>{fmtPrice(en.avg_price)}</td>
+              <td>{en.risk_allocated ? fmtMoney(en.risk_allocated) : "—"}</td>
+              <td>{en.stop_loss_price !== undefined ? fmtPrice(en.stop_loss_price) : "—"}</td>
+              <td className={pnlClass(en.unrealized_pnl)}>{fmtMoney(en.unrealized_pnl)}</td>
               <td>
-                {ex.status === "Active" && (
-                  <div className="inline-actions">
-                    <button type="button" onClick={() => setEditingExecution(ex)}>
-                      Edit
-                    </button>
-                  </div>
-                )}
+                <div className="inline-actions">
+                  <button type="button" onClick={() => setEditingEntry(en)}>
+                    Edit
+                  </button>
+                </div>
               </td>
             </tr>
           ))}
-          {executions.length === 0 && (
+          {entries.length === 0 && (
             <tr>
-              <td colSpan={8} className="muted">
-                No executions yet — click Add Entry above.
+              <td colSpan={6} className="muted">
+                No entries yet — click Add Entry above.
               </td>
             </tr>
           )}
         </tbody>
       </table>
 
+      {otherExecutions.length > 0 && (
+        <>
+          <h3>Exits &amp; Corrections</h3>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Contract</th>
+                <th>Type</th>
+                <th>Side</th>
+                <th>Qty</th>
+                <th>Price</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {otherExecutions.map((ex) => (
+                <tr key={ex.id} className={ex.status === "Edited" ? "execution-edited" : ex.status === "Deleted" ? "execution-deleted" : ""}>
+                  <td>{new Date(ex.timestamp).toLocaleString()}</td>
+                  <td>{contractLabelByLeg[ex.structure_leg_id] ?? "—"}</td>
+                  <td>{ex.execution_type}</td>
+                  <td className={ex.side === "Long" ? "pnl-pos" : "pnl-neg"}>{ex.side}</td>
+                  <td>{ex.quantity}</td>
+                  <td>{fmtPrice(ex.price)}</td>
+                  <td>{ex.status}</td>
+                  <td>
+                    {ex.status === "Active" && (
+                      <div className="inline-actions">
+                        <button type="button" onClick={() => setEditingExecution(ex)}>
+                          Edit
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
       {showAddEntry && (
         <AddEntryModal snapshot={snapshot} onClose={() => setShowAddEntry(false)} onSaved={handleChanged} />
       )}
       {showExit && <ExitModal snapshot={snapshot} onClose={() => setShowExit(false)} onSaved={handleChanged} />}
+      {editingEntry && (
+        <EditEntryModal
+          entry={editingEntry}
+          structureId={structure.id}
+          onClose={() => setEditingEntry(null)}
+          onSaved={handleChanged}
+        />
+      )}
       {editingExecution && (
         <EditExecutionModal
           execution={editingExecution}

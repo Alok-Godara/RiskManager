@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { v4 as uuid } from "uuid";
 import type { StructureSnapshot } from "../types/domain";
 import { StructureEngine } from "../engines/StructureEngine";
 import { Modal } from "./Modal";
@@ -31,6 +32,7 @@ export function AddEntryModal({
     }
     setSaving(true);
     try {
+      const entryGroupId = uuid();
       let first = true;
       for (const leg of legs) {
         const qty = Math.abs(leg.leg.ratio) * structureLots;
@@ -42,6 +44,7 @@ export function AddEntryModal({
           quantity: qty,
           price,
           risk_allocated: first && riskAllocated !== "" ? Number(riskAllocated) : undefined,
+          entry_group_id: entryGroupId,
         });
         first = false;
       }

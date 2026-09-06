@@ -38,6 +38,13 @@ export async function runMigrations(): Promise<void> {
       if (ex.status === undefined) {
         await repository.addExecution({ ...ex, status: "Active" });
       }
+      // Pre-"Entries" executions have no entry_group_id (see
+      // Execution.entry_group_id / engines/EntryEngine.ts) — each becomes
+      // its own single-leg entry group, since we can't know which other
+      // legs were originally submitted alongside it.
+      if (!ex.entry_group_id) {
+        await repository.addExecution({ ...ex, entry_group_id: uuid() });
+      }
     }
   }
 

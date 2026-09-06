@@ -38,6 +38,9 @@ export interface NewEntryInput {
   risk_allocated?: number;
   max_adverse_ticks?: number;
   notes?: string;
+  // Shared across every leg's Execution created by the same Add Entry
+  // submission — see Execution.entry_group_id / engines/EntryEngine.ts.
+  entry_group_id: UUID;
 }
 
 export interface ExitInput {
@@ -47,6 +50,8 @@ export interface ExitInput {
   price: number;
   execution_type?: "PartialExit" | "LegExit" | "FinalExit";
   notes?: string;
+  // Shared across every leg's Execution created by the same Exit submission.
+  entry_group_id: UUID;
 }
 
 export interface EditExecutionInput {
@@ -55,6 +60,7 @@ export interface EditExecutionInput {
   structure_leg_id?: UUID; // set to move the execution to a different leg ("wrong contract")
   quantity?: number;
   price?: number;
+  risk_allocated?: number; // pass to change; omit to leave the original's value unchanged
   timestamp?: string;
   notes?: string;
   reason?: string;
@@ -193,6 +199,7 @@ export class StructureEngine {
       max_adverse_ticks: input.max_adverse_ticks,
       timestamp: new Date().toISOString(),
       notes: input.notes,
+      entry_group_id: input.entry_group_id,
       status: "Active",
     };
     await repository.addExecution(execution);
@@ -253,6 +260,7 @@ export class StructureEngine {
       price: input.price,
       timestamp: new Date().toISOString(),
       notes: input.notes,
+      entry_group_id: input.entry_group_id,
       status: "Active",
     };
     await repository.addExecution(execution);
@@ -326,8 +334,11 @@ export class StructureEngine {
       side: sideFromRatio(targetLeg.ratio),
       quantity: input.quantity ?? original.quantity,
       price: input.price ?? original.price,
+      risk_allocated: input.risk_allocated !== undefined ? input.risk_allocated : original.risk_allocated,
       timestamp: input.timestamp ?? original.timestamp,
       notes: input.notes ?? original.notes,
+      // Always carried forward — a correction stays part of the same entry.
+      entry_group_id: original.entry_group_id,
       status: "Active",
       edited_from_execution_id: original.id,
       edited_to_execution_id: undefined,

@@ -175,6 +175,12 @@ export interface Execution {
   max_adverse_ticks?: number;
   timestamp: string;
   notes?: string;
+  // Ties together every leg's Execution created by ONE Add Entry / Exit
+  // submission (one row per leg, same id shared across the batch), so the
+  // UI can display "one entry" instead of N per-leg rows — see
+  // engines/EntryEngine.ts. An edit's replacement row always carries the
+  // original's entry_group_id forward.
+  entry_group_id: UUID;
 
   status: ExecutionStatus;
   edited_from_execution_id?: UUID; // set on the replacement row
@@ -292,6 +298,26 @@ export interface StructureSnapshot {
   total_unrealized_pnl: number;
   total_pnl: number;
   remaining_risk_capacity: number;
+}
+
+// ---------------------------------------------------------------------------
+// EntrySnapshot: one "Add Entry" submission, aggregated across every leg it
+// touched (see engines/EntryEngine.ts) — the unit the Entries table in
+// StructureDetail displays, instead of one row per leg per execution.
+// ---------------------------------------------------------------------------
+export interface EntrySnapshot {
+  entry_group_id: UUID;
+  structure_id: UUID;
+  timestamp: string;
+  structure_lots: number; // implied by qty = |ratio| * structure_lots on each leg
+  avg_price: number; // composite structure price for this entry: sum(ratio_i * price_i)
+  risk_allocated: number;
+  unrealized_pnl: number;
+  // Composite price level (same sum(ratio_i * price_i) convention as avg_price)
+  // at which this entry's loss would equal risk_allocated. Undefined if no
+  // risk was allocated to this entry.
+  stop_loss_price?: number;
+  legs: { leg: StructureLeg; contract: Contract; execution: Execution }[];
 }
 
 export interface InstrumentNetPositionRow {

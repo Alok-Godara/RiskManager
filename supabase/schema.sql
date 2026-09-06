@@ -134,12 +134,18 @@ create table if not exists executions (
   max_adverse_ticks double precision,
   timestamp timestamptz not null default now(),
   notes text,
+  -- Ties together every leg's Execution created by ONE Add Entry / Exit
+  -- submission, so the UI can show "one entry" instead of one row per leg
+  -- (see engines/EntryEngine.ts). A correction's replacement row always
+  -- carries the original's entry_group_id forward.
+  entry_group_id uuid not null,
   status text not null default 'Active' check (status in ('Active', 'Edited', 'Deleted')),
   edited_from_execution_id uuid,
   edited_to_execution_id uuid,
   edit_reason text
 );
 create index if not exists executions_structure_leg_id_idx on executions(structure_leg_id);
+create index if not exists executions_entry_group_id_idx on executions(entry_group_id);
 
 -- ---------------------------------------------------------------------------
 -- positions (materialized/derived — keyed by structure_leg_id, recomputed by PositionEngine)
