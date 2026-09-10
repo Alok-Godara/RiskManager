@@ -14,9 +14,52 @@ npm run build     # production build -> dist/
 ```
 
 By default everything persists in your browser's IndexedDB (`risk_manager_db`)
-— no server, no account, no external calls required. Market prices are
-simulated out of the box (`SimulatedProvider`) so the dashboard is fully
-usable immediately.
+— no server, no account, no external calls required. Without market-data
+credentials prices are simulated (`SimulatedProvider`) so the dashboard is
+usable immediately; add a QuantHub token (below) to switch to real prices.
+
+### Live market data (QuantHub)
+
+Put your token in `.env` at the project root:
+
+```
+QH_API_TOKEN=<your token>
+```
+
+Then restart `npm run dev`. The sidebar's Market Data pill flips from
+"Simulated" to "QuantHub", and Settings → API Configuration shows feed health.
+
+**The token is deliberately not `VITE_`-prefixed.** Vite only exposes
+`VITE_*` variables to browser code, so an unprefixed name guarantees the
+token never lands in the JS bundle. Instead the dev/preview server reads it
+(`vite.config.ts`) and injects `Authorization: Bearer <token>` into requests
+it proxies from the same-origin path `/qh-api` to
+`https://qh-api.corp.hertshtengroup.com` — which also sidesteps CORS.
+`.env` is gitignored. When deploying to static hosting, stand up an
+equivalent server-side proxy (e.g. a Netlify Edge Function) that adds the
+same header and point `VITE_QH_API_BASE` at it — never ship the token to the
+client.
+
+**How contracts map to QuantHub codes.** Each instrument carries a product
+code (Settings → Instruments → "QuantHub / Exchange Code" — Brent is `BZ`
+internally but `CO` on the feed). That plus the standard futures month code
+gives the instrument code: `CO` + Nov 2026 → `COX26`, Dec → `COZ26`,
+Jan 2027 → `COF27`. Only contracts backing open positions are requested,
+batched 50 per call, as `interval=1M` OHLC with `extraFields=buyvolume,sellvolume`;
+the latest candle's close is the current price. If an instrument shows no
+price, its product code is usually what needs fixing.
+
+Directly-traded structure quotes (e.g. "Jan26 Fly") have no outright-style
+code, so their mark is computed from the same authoritative outright closes
+as `sum(ratio x close)` and labelled `QuantHub (derived)` in the stored
+price's `source`. How P&L is *tracked* is unchanged — the leg is still one
+unit priced off that single number. If QuantHub exposes codes for quoted
+spreads/flies, only `QuantHubProvider.quoteCodeFor` needs to change.
+
+Failures are contained: auth, HTTP, network, empty-response and
+missing-price cases all leave the last known prices on screen, mark the feed
+unhealthy in the sidebar and Settings, and never interrupt trading,
+positions or P&L.
 
 ### Optional: connect Supabase for cloud persistence
 
@@ -65,7 +108,13 @@ src/
     PortfolioEngine.ts     Top-level portfolio roll-up
   services/
     MarketDataService.ts  Provider-agnostic price fetching, decoupled from UI.
-                           Polls only the contracts required by open positions.
+                           Polls only the contracts required by open positions,
+                           and tracks feed health for the UI.
+    quantHub/
+      symbols.ts           Contract -> QuantHub code (CO + Nov26 -> COX26)
+      client.ts            OHLC HTTP client, typed errors, tolerant parsing
+      QuantHubProvider.ts  The live price source (outrights direct, structure
+                           quotes derived from their outright closes)
   utils/
     priceAllocation.ts    Distributes a net structure price across legs
     contractGen.ts         Generates monthly contracts for a new instrument
@@ -101,8 +150,9 @@ src/
 1. ✅ `SupabaseRepository implements DataRepository` already exists, used
    automatically once `.env.local` has Supabase credentials — see above.
 2. ✅ The swap in `src/data/index.ts` is env-driven already — nothing to change.
-3. Implement a real `MarketDataProvider` (e.g. wrapping your data vendor's
-   REST/WebSocket API) and call `MarketDataService.setProvider(...)`.
+3. ✅ `QuantHubProvider implements MarketDataProvider` already exists, used
+   automatically once `QH_API_TOKEN` is set — see above. Deploying needs a
+   server-side proxy to hold the token (`VITE_QH_API_BASE`).
 4. Move the polling loop (`MarketDataService.start`) into a background worker
    or scheduled function (e.g. a Supabase Edge Function on a cron) that writes
    prices via the same `DataRepository`, and have the browser simply read the
@@ -183,4 +233,7 @@ a saved template.
 - Instrument-level net position view (true contract exposure across all open
   structures) and a portfolio-level summary dashboard
 - Complete, append-only audit trail of every action (History tab, portfolio-wide)
-- Continuous simulated market data polling, scoped only to contracts in open positions
+- Live QuantHub market data (1-minute OHLC) as the authoritative price source,
+  polled automatically and scoped only to contracts in open positions, with
+  feed health surfaced in the sidebar and Settings → API Configuration —
+  falling back to simulated prices when no token is configured

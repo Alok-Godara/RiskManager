@@ -1,7 +1,17 @@
-import { MarketDataService } from "../../services/MarketDataService";
+import { useMarketDataStatus } from "../../hooks/useMarketDataStatus";
 import { isCloudConfigured } from "../../data";
 
+const STATE_LABELS: Record<string, string> = {
+  idle: "Waiting for first update",
+  ok: "Live",
+  partial: "Partially priced",
+  error: "Unavailable",
+};
+
 export function ApiSettings() {
+  const marketData = useMarketDataStatus();
+  const isQuantHub = marketData.providerName.startsWith("QuantHub");
+
   return (
     <div className="panel">
       <h2>API Configuration</h2>
@@ -13,8 +23,27 @@ export function ApiSettings() {
       <div className="card-grid">
         <div className="stat-card">
           <div className="stat-label">Market Data Provider</div>
-          <div className="stat-value">{MarketDataService.getProviderName()}</div>
-          <div className="stat-sub">Polling every 4s for contracts in open positions</div>
+          <div className="stat-value">{marketData.providerName}</div>
+          <div className="stat-sub">
+            {isQuantHub
+              ? "QuantHub 1-minute OHLC, polled every 15s for contracts in open positions"
+              : "Simulated prices — set QH_API_TOKEN in .env and restart to use QuantHub"}
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Feed Status</div>
+          <div className={`stat-value ${marketData.state === "error" ? "pnl-neg" : marketData.state === "ok" ? "pnl-pos" : ""}`}>
+            {STATE_LABELS[marketData.state] ?? marketData.state}
+          </div>
+          <div className="stat-sub">
+            {marketData.lastError
+              ? marketData.lastError
+              : marketData.lastSuccessAt
+                ? `${marketData.pricedCount}/${marketData.requestedCount} contracts priced${
+                    marketData.quoteAsOf ? `, quotes as of ${new Date(marketData.quoteAsOf).toLocaleTimeString()}` : ""
+                  } (checked ${new Date(marketData.lastSuccessAt).toLocaleTimeString()})`
+                : "No prices fetched yet"}
+          </div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Database</div>
@@ -26,9 +55,11 @@ export function ApiSettings() {
       </div>
 
       <p className="helper-text">
-        To connect a real market-data API, implement a new <code>MarketDataProvider</code> in{" "}
-        <code>src/services/MarketDataService.ts</code> and call <code>MarketDataService.setProvider(...)</code> — the
-        rest of the app is unaffected.
+        QuantHub codes are built from each instrument's <strong>QuantHub / exchange code</strong> (Settings →
+        Instruments) plus the standard futures month code — e.g. code <code>CO</code> + Nov 2026 →{" "}
+        <code>COX26</code>. If an instrument shows no price, that code is usually what needs fixing. The Bearer token
+        lives only in <code>.env</code> as <code>QH_API_TOKEN</code> and is injected server-side by the dev proxy, so
+        it never reaches the browser bundle.
       </p>
     </div>
   );

@@ -162,8 +162,12 @@ export function InstrumentSettings({
         <input value={form.symbol} onChange={(e) => setForm({ ...form, symbol: e.target.value })} placeholder="e.g. BZ" />
       </div>
       <div className="form-row">
-        <label>Exchange / API Code (optional)</label>
-        <input value={form.exchange_code} onChange={(e) => setForm({ ...form, exchange_code: e.target.value })} placeholder="if different from symbol" />
+        <label>QuantHub / Exchange Code (optional)</label>
+        <input value={form.exchange_code} onChange={(e) => setForm({ ...form, exchange_code: e.target.value })} placeholder="e.g. CO for Brent" />
+        <p className="helper-text">
+          The product code live prices are requested under — combined with the futures month code, e.g.{" "}
+          <code>CO</code> + Nov 2026 → <code>COX26</code>. Defaults to the symbol above when left blank.
+        </p>
       </div>
       <div className="leg-row">
         <div className="form-row">

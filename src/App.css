@@ -178,6 +178,10 @@ body {
   70% { box-shadow: 0 0 0 7px rgba(47, 212, 122, 0); }
   100% { box-shadow: 0 0 0 0 rgba(47, 212, 122, 0); }
 }
+/* Feed health — see MarketDataStatus / useMarketDataStatus */
+.pulse-dot.idle { background: var(--text-faint); animation: none; }
+.pulse-dot.partial { background: var(--amber, #e0a340); animation: none; }
+.pulse-dot.error { background: var(--red); animation: none; }
 .pulse-label { font-size: 0.64rem; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.05em; }
 .pulse-value { font-size: 0.8rem; font-weight: 600; }
 

@@ -10,12 +10,15 @@ export async function seedIfEmpty() {
   const existing = await repository.getInstruments();
   if (existing.length > 0) return;
 
+  // `exchange_code` is the product code live prices are requested under
+  // (QuantHub) — e.g. Brent is "BZ" here but "CO" on the feed, giving
+  // "COX26" for Nov 2026. Editable per instrument in Settings.
   const instruments: Omit<Instrument, "id" | "created_at">[] = [
-    { symbol: "BZ", name: "Brent Crude", tick_size: 0.01, tick_value: 10, lot_size: 1000, currency: "USD", is_active: true },
-    { symbol: "CL", name: "WTI Crude", tick_size: 0.01, tick_value: 10, lot_size: 1000, currency: "USD", is_active: true },
-    { symbol: "WBS", name: "WTI Midland (Houston)", tick_size: 0.01, tick_value: 10, lot_size: 1000, currency: "USD", is_active: true },
-    { symbol: "HO", name: "NY Harbor ULSD", tick_size: 0.0001, tick_value: 4.2, lot_size: 42000, currency: "USD", is_active: true },
-    { symbol: "RB", name: "RBOB Gasoline", tick_size: 0.0001, tick_value: 4.2, lot_size: 42000, currency: "USD", is_active: true },
+    { symbol: "BZ", name: "Brent Crude", exchange_code: "CO", tick_size: 0.01, tick_value: 10, lot_size: 1000, currency: "USD", is_active: true },
+    { symbol: "CL", name: "WTI Crude", exchange_code: "CL", tick_size: 0.01, tick_value: 10, lot_size: 1000, currency: "USD", is_active: true },
+    { symbol: "WBS", name: "WTI Midland (Houston)", exchange_code: "WBS", tick_size: 0.01, tick_value: 10, lot_size: 1000, currency: "USD", is_active: true },
+    { symbol: "HO", name: "NY Harbor ULSD", exchange_code: "HO", tick_size: 0.0001, tick_value: 4.2, lot_size: 42000, currency: "USD", is_active: true },
+    { symbol: "RB", name: "RBOB Gasoline", exchange_code: "RB", tick_size: 0.0001, tick_value: 4.2, lot_size: 42000, currency: "USD", is_active: true },
   ];
 
   for (const inst of instruments) {

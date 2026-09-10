@@ -3,6 +3,7 @@ import { repository } from "../data";
 import { seedIfEmpty } from "../data/seed";
 import { runMigrations } from "../data/migrate";
 import { MarketDataService } from "../services/MarketDataService";
+import { QuantHubProvider } from "../services/quantHub/QuantHubProvider";
 import { PnLEngine } from "../engines/PnLEngine";
 import { PortfolioEngine } from "../engines/PortfolioEngine";
 import type {
@@ -52,15 +53,22 @@ export function useRiskManagerData() {
       await seedIfEmpty();
       await reload();
 
+      // QuantHub is the authoritative price source whenever a token is
+      // configured (QH_API_TOKEN in .env — see vite.config.ts); otherwise
+      // the simulated random walk keeps the dashboard usable.
+      if (__QH_CONFIGURED__) MarketDataService.setProvider(new QuantHubProvider());
+
       // Start continuous market data polling for exactly the contracts
-      // required by currently open positions (spec section 3).
+      // required by currently open positions (spec section 3). QuantHub
+      // serves 1-minute candles, so polling it faster than ~15s only adds
+      // load without adding information.
       MarketDataService.start(async () => {
         const legs = await repository.getAllLegs();
         const activeLegs = legs.filter((l) => l.is_active);
         const contractIds = new Set(activeLegs.map((l) => l.contract_id));
         const allContracts = await repository.getContracts();
         return allContracts.filter((c) => contractIds.has(c.id));
-      }, 4000);
+      }, __QH_CONFIGURED__ ? 15000 : 4000);
 
       unsub = MarketDataService.onUpdate(() => {
         reload();

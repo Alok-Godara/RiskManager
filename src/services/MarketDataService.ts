@@ -1,30 +1,46 @@
-import type { Contract, MarketPrice } from "../types/domain";
+import type { Contract, MarketPrice, UUID } from "../types/domain";
 import { repository } from "../data";
 
-/**
- * MarketDataProvider: the interface any price source implements.
- * Today we ship a SimulatedProvider (for local dev without an API key)
- * and a genericRestProvider adapter. Swapping providers means writing a
- * new class implementing this interface — nothing else changes.
- */
-export interface MarketDataProvider {
-  name: string;
-  fetchPrices(symbols: string[]): Promise<Record<string, number>>;
+/** One provider-supplied mark for a contract. */
+export interface PriceQuote {
+  price: number;
+  bid?: number;
+  ask?: number;
+  /** Overrides the provider name recorded on the MarketPrice row, if set. */
+  source?: string;
+  /**
+   * Epoch ms the price itself is "as of" (e.g. the OHLC candle's own time),
+   * as opposed to when we fetched it. Surfaced in the UI so a stale feed is
+   * visible rather than silently showing an old number as live.
+   */
+  asOf?: number;
 }
 
 /**
- * SimulatedProvider produces plausible, slowly-random-walking prices so the
- * dashboard is fully usable without any external API key. Swap for a real
- * provider (ICE, CME, a data vendor's REST/WebSocket API) via
- * MarketDataService.setProvider().
+ * MarketDataProvider: the interface any price source implements. Providers
+ * receive whole Contracts (not just symbols) because a real vendor mapping
+ * needs the instrument and month behind a contract — see
+ * services/quantHub/QuantHubProvider.ts, the live source. Contracts a
+ * provider can't price are simply left out of the result.
+ */
+export interface MarketDataProvider {
+  name: string;
+  fetchPrices(contracts: Contract[]): Promise<Record<UUID, PriceQuote>>;
+}
+
+/**
+ * SimulatedProvider: random-walk fallback so the dashboard stays usable
+ * with no market-data credentials configured (QH_API_TOKEN unset). Never
+ * used when QuantHub is configured.
  */
 export class SimulatedProvider implements MarketDataProvider {
   name = "Simulated";
   private lastPrices: Record<string, number> = {};
 
-  async fetchPrices(symbols: string[]): Promise<Record<string, number>> {
-    const out: Record<string, number> = {};
-    for (const symbol of symbols) {
+  async fetchPrices(contracts: Contract[]): Promise<Record<UUID, PriceQuote>> {
+    const out: Record<UUID, PriceQuote> = {};
+    for (const contract of contracts) {
+      const symbol = contract.market_data_symbol ?? contract.code;
       const base = this.lastPrices[symbol] ?? this.seedPrice(symbol);
       // Structure quotes (spreads/flies) trade in a much tighter range than
       // outrights — scale the random walk to roughly 1% of the seed price
@@ -33,7 +49,7 @@ export class SimulatedProvider implements MarketDataProvider {
       const drift = (Math.random() - 0.5) * 2 * driftScale;
       const next = Math.round((base + drift) * 1000) / 1000;
       this.lastPrices[symbol] = next;
-      out[symbol] = next;
+      out[contract.id] = { price: next };
     }
     return out;
   }
@@ -55,30 +71,16 @@ export class SimulatedProvider implements MarketDataProvider {
   }
 }
 
-/**
- * GenericRestProvider: example adapter for a real REST market-data API.
- * Configure base URL / API key via ApiConfig records. Left generic since
- * the actual provider isn't chosen yet (per the architecture doc).
- */
-export class GenericRestProvider implements MarketDataProvider {
-  name = "GenericRest";
-  private baseUrl: string;
-  private apiKey?: string;
-  constructor(baseUrl: string, apiKey?: string) {
-    this.baseUrl = baseUrl;
-    this.apiKey = apiKey;
-  }
-
-  async fetchPrices(symbols: string[]): Promise<Record<string, number>> {
-    const url = `${this.baseUrl}?symbols=${encodeURIComponent(symbols.join(","))}`;
-    const res = await fetch(url, {
-      headers: this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {},
-    });
-    if (!res.ok) throw new Error(`Market data fetch failed: ${res.status}`);
-    const json = await res.json();
-    // Expect { symbol: price } shape; adapt per real provider's schema.
-    return json as Record<string, number>;
-  }
+/** Health of the last price refresh, for display in the UI. */
+export interface MarketDataStatus {
+  providerName: string;
+  state: "idle" | "ok" | "partial" | "error";
+  lastSuccessAt?: string;
+  /** ISO time the newest price is "as of" (candle time), when the provider reports one. */
+  quoteAsOf?: string;
+  lastError?: string;
+  pricedCount: number;
+  requestedCount: number;
 }
 
 type Listener = () => void;
@@ -94,19 +96,47 @@ class MarketDataServiceImpl {
   private provider: MarketDataProvider = new SimulatedProvider();
   private intervalId: number | null = null;
   private listeners = new Set<Listener>();
+  private statusListeners = new Set<Listener>();
   private pollMs = 4000;
+  private status: MarketDataStatus = {
+    providerName: "Simulated",
+    state: "idle",
+    pricedCount: 0,
+    requestedCount: 0,
+  };
 
   setProvider(provider: MarketDataProvider) {
     this.provider = provider;
+    this.setStatus({ providerName: provider.name, state: "idle", pricedCount: 0, requestedCount: 0 });
   }
 
   getProviderName() {
     return this.provider.name;
   }
 
-  onUpdate(listener: Listener) {
+  getStatus(): MarketDataStatus {
+    return this.status;
+  }
+
+  private setStatus(next: MarketDataStatus) {
+    this.status = next;
+    this.statusListeners.forEach((l) => l());
+  }
+
+  /** Fires when prices changed (drives a data reload). */
+  onUpdate(listener: Listener): () => void {
     this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /** Fires when the feed's health changes — no data reload implied. */
+  onStatusChange(listener: Listener): () => void {
+    this.statusListeners.add(listener);
+    return () => {
+      this.statusListeners.delete(listener);
+    };
   }
 
   private notify() {
@@ -116,28 +146,57 @@ class MarketDataServiceImpl {
   /** Fetch once for the given contracts and persist to the repository. */
   async refresh(contracts: Contract[]): Promise<void> {
     if (contracts.length === 0) return;
-    const symbolByContract = new Map<string, Contract>();
-    contracts.forEach((c) => symbolByContract.set(c.market_data_symbol ?? c.code, c));
-    const symbols = Array.from(symbolByContract.keys());
 
     try {
-      const prices = await this.provider.fetchPrices(symbols);
-      for (const [symbol, price] of Object.entries(prices)) {
-        const contract = symbolByContract.get(symbol);
-        if (!contract) continue;
+      const quotes = await this.provider.fetchPrices(contracts);
+      const timestamp = new Date().toISOString();
+      let priced = 0;
+      let newestAsOf = 0;
+
+      for (const contract of contracts) {
+        const quote = quotes[contract.id];
+        if (!quote || !Number.isFinite(quote.price)) continue;
+        if (quote.asOf && quote.asOf > newestAsOf) newestAsOf = quote.asOf;
         const marketPrice: MarketPrice = {
           contract_id: contract.id,
-          price,
-          source: this.provider.name,
-          timestamp: new Date().toISOString(),
+          price: quote.price,
+          bid: quote.bid,
+          ask: quote.ask,
+          source: quote.source ?? this.provider.name,
+          timestamp,
         };
         await repository.upsertMarketPrice(marketPrice);
+        priced++;
       }
-      this.notify();
+
+      this.setStatus({
+        providerName: this.provider.name,
+        state: priced === contracts.length ? "ok" : priced > 0 ? "partial" : "error",
+        lastSuccessAt: priced > 0 ? timestamp : this.status.lastSuccessAt,
+        quoteAsOf: newestAsOf > 0 ? new Date(newestAsOf).toISOString() : this.status.quoteAsOf,
+        lastError:
+          priced === 0
+            ? "No prices returned — check the instrument's QuantHub code in Settings → Instruments."
+            : undefined,
+        pricedCount: priced,
+        requestedCount: contracts.length,
+      });
+
+      if (priced > 0) this.notify();
     } catch (err) {
-      // Deliberately swallow network errors so a bad tick doesn't crash the
-      // dashboard; the UI shows "stale" prices via timestamp comparison.
+      // Never let a bad tick crash the dashboard — the last known prices
+      // stay on screen and the sidebar shows the feed as unhealthy.
+      const message = err instanceof Error ? err.message : "Market data fetch failed";
       console.error("MarketDataService.refresh failed:", err);
+      this.setStatus({
+        providerName: this.provider.name,
+        state: "error",
+        lastSuccessAt: this.status.lastSuccessAt,
+        quoteAsOf: this.status.quoteAsOf,
+        lastError: message,
+        pricedCount: 0,
+        requestedCount: contracts.length,
+      });
     }
   }
 
@@ -150,8 +209,12 @@ class MarketDataServiceImpl {
     this.stop();
     this.pollMs = pollMs;
     const tick = async () => {
-      const contracts = await getRequiredContracts();
-      await this.refresh(contracts);
+      try {
+        const contracts = await getRequiredContracts();
+        await this.refresh(contracts);
+      } catch (err) {
+        console.error("MarketDataService tick failed:", err);
+      }
     };
     tick();
     this.intervalId = window.setInterval(tick, this.pollMs);

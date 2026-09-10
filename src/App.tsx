@@ -1,6 +1,7 @@
 import { useState, type ReactElement } from "react";
 import "./App.css";
 import { useRiskManagerData } from "./hooks/useRiskManagerData";
+import { useMarketDataStatus } from "./hooks/useMarketDataStatus";
 import { PortfolioDashboard } from "./components/PortfolioDashboard";
 import { InstrumentDashboard } from "./components/InstrumentDashboard";
 import { StructureList } from "./components/StructureList";
@@ -8,7 +9,6 @@ import { NewStructureForm } from "./components/NewStructureForm";
 import { StructureDetail } from "./components/StructureDetail";
 import { AuditLog } from "./components/AuditLog";
 import { Settings } from "./components/Settings";
-import { MarketDataService } from "./services/MarketDataService";
 import { isCloudConfigured } from "./data";
 import { fmtMoney, pnlClass } from "./utils/format";
 import { IconGrid, IconLayers, IconStructure, IconClock, IconCloud, IconDisk, IconSettings } from "./components/icons";
@@ -44,9 +44,18 @@ function App() {
     loading,
     reload,
   } = useRiskManagerData();
+  const marketData = useMarketDataStatus();
   const [tab, setTab] = useState<Tab>("dashboard");
   const [selectedStructureId, setSelectedStructureId] = useState<string | null>(null);
   const [creatingStructure, setCreatingStructure] = useState(false);
+
+  const asOfHint = marketData.quoteAsOf ? ` — quotes as of ${new Date(marketData.quoteAsOf).toLocaleTimeString()}` : "";
+  const marketDataHint =
+    marketData.state === "ok"
+      ? `Live — ${marketData.pricedCount} contract(s) priced${asOfHint}`
+      : marketData.state === "partial"
+        ? `${marketData.pricedCount} of ${marketData.requestedCount} contracts priced${asOfHint}`
+        : "Waiting for the first price update…";
 
   if (loading) {
     return (
@@ -96,11 +105,11 @@ function App() {
             {isCloudConfigured ? <IconCloud size={12} /> : <IconDisk size={12} />}
             {isCloudConfigured ? "Supabase" : "Local (IndexedDB)"}
           </div>
-          <div className="market-pulse">
-            <span className="pulse-dot" />
+          <div className="market-pulse" title={marketData.lastError ?? marketDataHint}>
+            <span className={`pulse-dot ${marketData.state}`} />
             <div>
               <div className="pulse-label">Market Data</div>
-              <div className="pulse-value">{MarketDataService.getProviderName()}</div>
+              <div className="pulse-value">{marketData.providerName}</div>
             </div>
           </div>
         </div>
