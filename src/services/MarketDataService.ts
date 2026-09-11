@@ -74,10 +74,12 @@ export class SimulatedProvider implements MarketDataProvider {
 /** Health of the last price refresh, for display in the UI. */
 export interface MarketDataStatus {
   providerName: string;
-  state: "idle" | "ok" | "partial" | "error";
+  state: "idle" | "ok" | "partial" | "error" | "rate_limited";
   lastSuccessAt?: string;
   /** ISO time the newest price is "as of" (candle time), when the provider reports one. */
   quoteAsOf?: string;
+  /** For state "rate_limited": ISO time polling will resume — an absolute time rather than a countdown, so a UI that isn't re-rendering every second still shows something accurate. */
+  retryAt?: string;
   lastError?: string;
   pricedCount: number;
   requestedCount: number;
@@ -225,12 +227,17 @@ class MarketDataServiceImpl {
           rateLimit.retryAfterMs ?? Math.min(MAX_BACKOFF_MS, MIN_BACKOFF_MS * 2 ** (this.consecutiveRateLimits - 1));
         this.cooldownUntil = Date.now() + backoffMs;
         console.warn(`MarketDataService: rate-limited, backing off ${Math.round(backoffMs / 1000)}s`);
+        // An absolute retry time, not "in Ns": nothing re-renders the UI
+        // while polling is paused, so a relative countdown would just sit
+        // frozen on screen looking stuck instead of counting down.
+        const retryAt = new Date(this.cooldownUntil);
         this.setStatus({
           providerName: this.provider.name,
-          state: "error",
+          state: "rate_limited",
           lastSuccessAt: this.status.lastSuccessAt,
           quoteAsOf: this.status.quoteAsOf,
-          lastError: `Rate-limited by ${this.provider.name} — retrying in ${Math.ceil(backoffMs / 1000)}s.`,
+          retryAt: retryAt.toISOString(),
+          lastError: `Rate-limited by ${this.provider.name} — pausing until ${retryAt.toLocaleTimeString()}, then resuming automatically.`,
           pricedCount: 0,
           requestedCount: contracts.length,
         });

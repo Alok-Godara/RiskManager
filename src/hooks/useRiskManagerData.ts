@@ -64,21 +64,24 @@ export function useRiskManagerData() {
       // 1-minute candle updating in real time rather than waiting a full
       // minute between prices.
       //
-      // 5s, not 1s: live-tested against the real API, a burst of ~15
-      // requests in a few seconds triggers a 429, and recovery took over
-      // 90s of complete silence (see MarketDataService's rate-limit
-      // backoff). One tick is one request (all open-position contracts are
-      // batched together), so 5s keeps every normal tick under that
-      // threshold with margin instead of spending most of its time in a
-      // cooldown loop. MarketDataService.start's pollMs is a plain
-      // parameter — lower this if your token's actual limit is higher.
+      // 1s as requested. Live-tested against the real API: a burst of ~15
+      // requests in a few seconds triggers a 429, with recovery taking 90s+
+      // of complete silence — so at this cadence you WILL see periodic
+      // pauses rather than a perfectly steady 1s cadence. MarketDataService
+      // handles this by backing off automatically (never spamming through
+      // a cooldown) and resuming 1s polling the moment it's over — see
+      // Settings -> API Configuration / the sidebar tooltip for the exact
+      // reason and retry time whenever it isn't "Live". If your token's
+      // actual sustained rate limit turns out lower than that burst
+      // threshold, you'll see this more often; raise pollMs here to trade
+      // update speed for fewer cooldowns.
       MarketDataService.start(async () => {
         const legs = await repository.getAllLegs();
         const activeLegs = legs.filter((l) => l.is_active);
         const contractIds = new Set(activeLegs.map((l) => l.contract_id));
         const allContracts = await repository.getContracts();
         return allContracts.filter((c) => contractIds.has(c.id));
-      }, __QH_CONFIGURED__ ? 5000 : 4000);
+      }, __QH_CONFIGURED__ ? 1000 : 4000);
 
       unsub = MarketDataService.onUpdate(() => {
         reload();

@@ -6,6 +6,7 @@ const STATE_LABELS: Record<string, string> = {
   ok: "Live",
   partial: "Partially priced",
   error: "Unavailable",
+  rate_limited: "Cooling down",
 };
 
 export function ApiSettings() {
@@ -26,7 +27,7 @@ export function ApiSettings() {
           <div className="stat-value">{marketData.providerName}</div>
           <div className="stat-sub">
             {isQuantHub
-              ? "QuantHub 1-minute OHLC, polled every 5s for contracts in open positions (throttled to stay under the token's rate limit)"
+              ? "QuantHub 1-minute OHLC, polled every 1s for contracts in open positions — pauses automatically if the token gets rate-limited, then resumes"
               : "Simulated prices — set QH_API_TOKEN in .env and restart to use QuantHub"}
           </div>
         </div>

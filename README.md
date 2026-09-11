@@ -31,14 +31,23 @@ Then restart `npm run dev`. The sidebar's Market Data pill flips from
 
 **The token is deliberately not `VITE_`-prefixed.** Vite only exposes
 `VITE_*` variables to browser code, so an unprefixed name guarantees the
-token never lands in the JS bundle. Instead the dev/preview server reads it
-(`vite.config.ts`) and injects `Authorization: Bearer <token>` into requests
-it proxies from the same-origin path `/qh-api` to
-`https://qh-api.corp.hertshtengroup.com` — which also sidesteps CORS.
-`.env` is gitignored. When deploying to static hosting, stand up an
-equivalent server-side proxy (e.g. a Netlify Edge Function) that adds the
-same header and point `VITE_QH_API_BASE` at it — never ship the token to the
-client.
+token never lands in the JS bundle. Instead, something server-side reads it
+and injects `Authorization: Bearer <token>` into requests proxied from the
+same-origin path `/qh-api` to `https://qh-api.corp.hertshtengroup.com` —
+which also sidesteps CORS. Two environments, two proxies, same contract:
+
+- **Local dev/preview**: the Vite server itself (`vite.config.ts`), reading
+  `QH_API_TOKEN` from `.env` (gitignored).
+- **Deployed (Netlify)**: `netlify/edge-functions/qh-api-proxy.ts`, reading
+  `QH_API_TOKEN` from the site's environment variables (Netlify dashboard →
+  Site configuration → Environment variables — **not** a file, and not set
+  automatically by `netlify.toml`). Skipping this step is exactly the
+  "QuantHub returned a response that isn't valid JSON" failure: `/qh-api/*`
+  falls through to the SPA catch-all redirect and gets `index.html` back
+  instead of an API response, since nothing else claims that path.
+
+Never ship the token to the client, and never add it as a `VITE_`-prefixed
+variable anywhere.
 
 **How contracts map to QuantHub codes.** Each instrument carries a product
 code (Settings → Instruments → "QuantHub / Exchange Code" — Brent is `BZ`
@@ -154,16 +163,21 @@ src/
 1. ✅ `SupabaseRepository implements DataRepository` already exists, used
    automatically once `.env.local` has Supabase credentials — see above.
 2. ✅ The swap in `src/data/index.ts` is env-driven already — nothing to change.
-3. ✅ `QuantHubProvider implements MarketDataProvider` already exists, used
-   automatically once `QH_API_TOKEN` is set — see above. Deploying needs a
-   server-side proxy to hold the token (`VITE_QH_API_BASE`).
+3. ✅ `QuantHubProvider implements MarketDataProvider` already exists, and
+   ✅ its server-side proxy exists for both environments (Vite dev server
+   locally, `netlify/edge-functions/qh-api-proxy.ts` when deployed) — see
+   above. Just set `QH_API_TOKEN` in each environment's own place.
 4. Move the polling loop (`MarketDataService.start`) into a background worker
    or scheduled function (e.g. a Supabase Edge Function on a cron) that writes
    prices via the same `DataRepository`, and have the browser simply read the
    latest row.
-5. Deploy with `netlify.toml` (already included) or any static host — the
-   frontend build doesn't change. Set the same `VITE_SUPABASE_*` values as
-   environment variables in Netlify.
+5. Deploy with `netlify.toml` (already included). In the Netlify dashboard,
+   set `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` (for Supabase) and
+   `QH_API_TOKEN` / optionally `QH_API_URL` (for QuantHub) as site
+   environment variables — none of these live in any committed file.
+   Deploying to a different static host needs an equivalent to
+   `netlify/edge-functions/qh-api-proxy.ts` (any platform's edge/serverless
+   functions work) serving the same `/qh-api/*` path.
 
 ## Structure templates — the core concept
 

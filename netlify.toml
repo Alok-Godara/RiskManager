@@ -2,6 +2,16 @@
   command = "npm run build"
   publish = "dist"
 
+# Server-side QuantHub proxy (netlify/edge-functions/qh-api-proxy.ts) —
+# injects the Bearer token from this site's QH_API_TOKEN environment
+# variable, so it never reaches the client. Declared here in addition to
+# the function's own `export const config` for clarity; must come before
+# the SPA catch-all below, or /qh-api/* would resolve to index.html instead
+# (the "response isn't valid JSON" failure mode).
+[[edge_functions]]
+  path = "/qh-api/*"
+  function = "qh-api-proxy"
+
 [[redirects]]
   from = "/*"
   to = "/index.html"
