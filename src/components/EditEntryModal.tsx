@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { EntrySnapshot } from "../types/domain";
 import { StructureEngine } from "../engines/StructureEngine";
+import { tickSizeForStructure } from "../utils/instrumentLookup";
 import { Modal } from "./Modal";
 
 export function EditEntryModal({
@@ -22,6 +23,13 @@ export function EditEntryModal({
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Sizes the price fields' scroll/spinner step to the instrument's real
+  // tick size, so incrementing there always lands on a tradeable price.
+  const [tickSize, setTickSize] = useState(0.01);
+
+  useEffect(() => {
+    tickSizeForStructure(structureId).then(setTickSize);
+  }, [structureId]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -107,7 +115,7 @@ export function EditEntryModal({
                 <td>
                   <input
                     type="number"
-                    step="0.001"
+                    step={tickSize}
                     value={legPrices[l.leg.id] ?? 0}
                     onChange={(e) => setLegPrices((prev) => ({ ...prev, [l.leg.id]: Number(e.target.value) }))}
                     style={{ width: 100 }}

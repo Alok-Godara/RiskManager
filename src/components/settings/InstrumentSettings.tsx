@@ -112,7 +112,7 @@ export function InstrumentSettings({
         created_at: new Date().toISOString(),
       };
       await repository.upsertInstrument(instrument);
-      const contracts = buildRollingContracts(instrument.id, instrument.symbol);
+      const contracts = buildRollingContracts(instrument);
       for (const c of contracts) await repository.upsertContract(c);
       await logAudit({
         event_type: "InstrumentCreated",
@@ -215,7 +215,10 @@ export function InstrumentSettings({
       </div>
       <p className="helper-text">
         Only active instruments appear when creating a new structure. Adding an instrument generates its next 24
-        months of contracts automatically, and that window keeps rolling forward on its own.
+        months of contracts starting at its real tradeable front month (see utils/contractExpiry.ts — each product's
+        actual exchange last-trading-day rule, not just "this calendar month"), and that window keeps rolling
+        forward on its own. A month past its own last trading day is excluded from new entries automatically and
+        shown as Expired on any structure still holding it.
       </p>
       {error && <p className="helper-text" style={{ color: "var(--red)" }}>{error}</p>}
 

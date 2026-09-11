@@ -1,5 +1,6 @@
 import { v4 as uuid } from "uuid";
-import type { Contract, UUID } from "../types/domain";
+import type { Contract, Instrument } from "../types/domain";
+import { frontMonth, lastTradingDay } from "./contractExpiry";
 
 export const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -21,28 +22,32 @@ function monthLabelFor(date: Date): { label: string; code: string } {
   return { label: suffix, code: monthName.toUpperCase() + twoDigitYear };
 }
 
-/** Build a rolling run of monthly contracts starting at the current (or given) month. */
-export function buildRollingContracts(
-  instrumentId: UUID,
-  symbol: string,
-  monthCount = 24,
-  from: Date = new Date()
-): Contract[] {
+/**
+ * Build a rolling run of monthly contracts, starting at the instrument's
+ * actual tradeable FRONT month (see utils/contractExpiry.ts) — not simply
+ * `from`'s own calendar month. Brent's front month, for example, runs
+ * 2-3 months ahead of today because its last-trading-day is that far
+ * before its delivery month; generating from "today" would create months
+ * that are already expired by real exchange rules.
+ */
+export function buildRollingContracts(instrument: Instrument, monthCount = 24, from: Date = new Date()): Contract[] {
   const now = new Date().toISOString();
+  const start = frontMonth(instrument, from);
   const out: Contract[] = [];
   for (let i = 0; i < monthCount; i++) {
-    const d = new Date(from.getFullYear(), from.getMonth() + i, 1);
+    const d = new Date(start.getFullYear(), start.getMonth() + i, 1);
     const { label, code } = monthLabelFor(d);
     out.push({
       id: uuid(),
-      instrument_id: instrumentId,
-      code: `${symbol}-${code}`,
+      instrument_id: instrument.id,
+      code: `${instrument.symbol}-${code}`,
       month_label: label,
-      // Not a real delivery expiry — used as a sortable reference date so
-      // the anchor + month_offset logic (utils/templateExpansion.ts) can
-      // walk contracts chronologically.
-      expiry_date: d.toISOString(),
-      market_data_symbol: `${symbol}-${code}`,
+      // The contract's real last-trading-day (utils/contractExpiry.ts) —
+      // used both to sort contracts chronologically and to derive whether
+      // it's Active / Near Expiry / Expired (always computed against "now",
+      // never stored as a separate flag).
+      expiry_date: lastTradingDay(instrument, d).toISOString(),
+      market_data_symbol: `${instrument.symbol}-${code}`,
       created_at: now,
     });
   }

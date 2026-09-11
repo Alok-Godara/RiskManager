@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { StructureSnapshot, Execution, EntrySnapshot } from "../types/domain";
 import { RiskEngine } from "../engines/RiskEngine";
 import { EntryEngine } from "../engines/EntryEngine";
+import { contractLifecycleStatus } from "../utils/contractExpiry";
 import { repository } from "../data";
 import { fmtMoney, fmtPrice, pnlClass } from "../utils/format";
 import { IconChevronLeft } from "./icons";
@@ -110,9 +111,21 @@ export function StructureDetail({
           </tr>
         </thead>
         <tbody>
-          {legs.map((l) => (
+          {legs.map((l) => {
+            const contractStatus = contractLifecycleStatus(l.contract.expiry_date);
+            return (
             <tr key={l.leg.id}>
-              <td>{l.contract.month_label}</td>
+              <td>
+                {l.contract.month_label}
+                {contractStatus !== "Active" && (
+                  <span
+                    className={`badge ${contractStatus === "Expired" ? "badge-expired" : "badge-nearexpiry"}`}
+                    style={{ marginLeft: 6 }}
+                  >
+                    {contractStatus}
+                  </span>
+                )}
+              </td>
               <td className={l.leg.ratio >= 0 ? "pnl-pos" : "pnl-neg"}>{l.leg.ratio >= 0 ? `+${l.leg.ratio}` : l.leg.ratio}</td>
               <td>{l.position.net_quantity}</td>
               <td>{fmtPrice(l.position.average_price)}</td>
@@ -121,7 +134,8 @@ export function StructureDetail({
               <td className={pnlClass(l.position.realized_pnl)}>{fmtMoney(l.position.realized_pnl)}</td>
               <td>{l.leg.is_active ? "Active" : "Closed"}</td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
 

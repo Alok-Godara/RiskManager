@@ -113,11 +113,15 @@ src/
     quantHub/
       symbols.ts           Contract -> QuantHub code (CO + Nov26 -> COX26)
       client.ts            OHLC HTTP client, typed errors, tolerant parsing
-      QuantHubProvider.ts  The live price source (outrights direct, structure
-                           quotes derived from their outright closes)
+      QuantHubProvider.ts  The live price source — outrights and directly-
+                           traded structure quotes (composite codes) both
+                           requested straight from the API, never derived
   utils/
     priceAllocation.ts    Distributes a net structure price across legs
-    contractGen.ts         Generates monthly contracts for a new instrument
+    contractExpiry.ts     Real exchange last-trading-day rules per product —
+                           front month, Active/Near Expiry/Expired status
+    contractGen.ts         Generates monthly contracts for a new instrument,
+                           starting at the real tradeable front month
   components/             UI — reads only through engines/repository, never
                            touches IndexedDB or fetch() directly
     settings/              Instrument + Structure Template management
@@ -204,9 +208,13 @@ a saved template.
 
 - Supabase/Postgres (or local IndexedDB) persistence behind a single `DataRepository`
 - Instrument management (Settings → Instruments): add/edit/deactivate/delete
-  (blocked if in use), with rolling 24-month contract generation that keeps
-  extending forward on its own — only active instruments appear when creating
-  a structure
+  (blocked if in use), with rolling 24-month contract generation starting at
+  the instrument's real tradeable front month (`utils/contractExpiry.ts` —
+  each product's actual exchange last-trading-day rule) and extending
+  forward on its own — only active instruments appear when creating a
+  structure, and only contracts still trading are offered as anchors; a
+  month nearing its last trading day is flagged (not hidden), and one past
+  it shows as Expired on any structure still holding it
 - Structure Template management (Settings → Structure Templates): define your
   own signed-ratio structure shapes, optionally built from another template as
   a base structure (composite/nested templates), instead of hard-coded types

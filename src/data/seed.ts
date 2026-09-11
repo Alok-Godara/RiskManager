@@ -25,7 +25,7 @@ export async function seedIfEmpty() {
     const instrument: Instrument = { ...inst, id: uuid(), created_at: new Date().toISOString() };
     await repository.upsertInstrument(instrument);
 
-    for (const contract of buildRollingContracts(instrument.id, instrument.symbol)) {
+    for (const contract of buildRollingContracts(instrument)) {
       await repository.upsertContract(contract);
     }
   }

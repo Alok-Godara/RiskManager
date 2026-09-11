@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { v4 as uuid } from "uuid";
 import type { StructureSnapshot } from "../types/domain";
 import { StructureEngine } from "../engines/StructureEngine";
+import { repository } from "../data";
 import { Modal } from "./Modal";
 import { fmtPrice } from "../utils/format";
 
@@ -22,6 +23,15 @@ export function AddEntryModal({
   const [riskAllocated, setRiskAllocated] = useState<number | "">("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Sizes the price fields' scroll/spinner step to the instrument's real
+  // tick size, so incrementing there always lands on a tradeable price.
+  const [tickSize, setTickSize] = useState(0.01);
+
+  useEffect(() => {
+    repository.getInstrument(snapshot.structure.instrument_id).then((inst) => {
+      if (inst) setTickSize(inst.tick_size);
+    });
+  }, [snapshot.structure.instrument_id]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -85,7 +95,7 @@ export function AddEntryModal({
                 <td>
                   <input
                     type="number"
-                    step="0.001"
+                    step={tickSize}
                     value={legPrices[l.leg.id] ?? 0}
                     onChange={(e) => setLegPrices((prev) => ({ ...prev, [l.leg.id]: Number(e.target.value) }))}
                     style={{ width: 100 }}

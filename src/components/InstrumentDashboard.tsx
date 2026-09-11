@@ -12,19 +12,10 @@ export function InstrumentDashboard({
 }) {
   const [selectedId, setSelectedId] = useState<string>("");
   const [rows, setRows] = useState<InstrumentNetPositionRow[]>([]);
-  const [showAllMonths, setShowAllMonths] = useState(false);
 
   useEffect(() => {
     if (!selectedId && instruments.length > 0) setSelectedId(instruments[0].id);
   }, [instruments, selectedId]);
-
-  // Collapse the full month list only when the user actually switches
-  // instrument — NOT on `snapshots`, which gets a new reference on every
-  // background reload (e.g. the 4s market-data poll) and would otherwise
-  // silently collapse an expanded panel out from under the user.
-  useEffect(() => {
-    setShowAllMonths(false);
-  }, [selectedId]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -35,6 +26,8 @@ export function InstrumentDashboard({
     (s) => s.structure.instrument_id === selectedId && s.structure.status !== "Fully Closed"
   );
 
+  // Only contract months with an actual position — a rolling window can
+  // hold 24+ empty months per instrument that add nothing here.
   const exposedRows = rows.filter((r) => r.long_lots !== 0 || r.short_lots !== 0);
 
   function row(r: InstrumentNetPositionRow) {
@@ -85,33 +78,6 @@ export function InstrumentDashboard({
           )}
         </tbody>
       </table>
-
-      <button type="button" className="secondary" onClick={() => setShowAllMonths((v) => !v)}>
-        {showAllMonths ? "Hide all contract months" : `Show all contract months (${rows.length})`}
-      </button>
-
-      {showAllMonths && (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Contract</th>
-              <th>Long Lots</th>
-              <th>Short Lots</th>
-              <th>Net Lots</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(row)}
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={4} className="muted">
-                  No contracts for this instrument.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      )}
 
       <h3>Structures contributing to this instrument</h3>
       <ul className="structure-list">

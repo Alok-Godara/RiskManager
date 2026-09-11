@@ -12,11 +12,14 @@ export function ContractAutocomplete({
   value,
   onChange,
   placeholder = "Type month, e.g. Apr26…",
+  hintFor,
 }: {
   contracts: Contract[];
   value: string;
   onChange: (contractId: string) => void;
   placeholder?: string;
+  /** Optional small text shown next to a contract in the dropdown, e.g. a "Near Expiry" warning. */
+  hintFor?: (contract: Contract) => string | undefined;
 }) {
   const selected = contracts.find((c) => c.id === value);
   const [query, setQuery] = useState(selected?.month_label ?? "");
@@ -89,19 +92,23 @@ export function ContractAutocomplete({
       />
       {open && matches.length > 0 && (
         <ul className="autocomplete-list">
-          {matches.map((c, i) => (
-            <li
-              key={c.id}
-              className={i === highlight ? "highlighted" : ""}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                selectContract(c);
-              }}
-              onMouseEnter={() => setHighlight(i)}
-            >
-              {c.month_label}
-            </li>
-          ))}
+          {matches.map((c, i) => {
+            const hint = hintFor?.(c);
+            return (
+              <li
+                key={c.id}
+                className={i === highlight ? "highlighted" : ""}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  selectContract(c);
+                }}
+                onMouseEnter={() => setHighlight(i)}
+              >
+                {c.month_label}
+                {hint && <span className="autocomplete-hint"> ({hint})</span>}
+              </li>
+            );
+          })}
         </ul>
       )}
       {open && matches.length === 0 && (

@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Execution, LegSnapshot } from "../types/domain";
 import { StructureEngine } from "../engines/StructureEngine";
+import { tickSizeForStructure } from "../utils/instrumentLookup";
 import { Modal } from "./Modal";
 
 function toLocalInputValue(iso: string): string {
@@ -30,6 +31,13 @@ export function EditExecutionModal({
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Sizes the price field's scroll/spinner step to the instrument's real
+  // tick size, so incrementing there always lands on a tradeable price.
+  const [tickSize, setTickSize] = useState(0.01);
+
+  useEffect(() => {
+    tickSizeForStructure(structureId).then(setTickSize);
+  }, [structureId]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -98,7 +106,7 @@ export function EditExecutionModal({
           </div>
           <div className="form-row">
             <label>Price</label>
-            <input type="number" step="0.001" value={price} onChange={(e) => setPrice(Number(e.target.value))} />
+            <input type="number" step={tickSize} value={price} onChange={(e) => setPrice(Number(e.target.value))} />
           </div>
         </div>
         <div className="form-row">

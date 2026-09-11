@@ -4,6 +4,7 @@ import { StructureEngine } from "../engines/StructureEngine";
 import { StructureQuoteEngine } from "../engines/StructureQuoteEngine";
 import { previewLegs, type PreviewLeg } from "../utils/templateExpansion";
 import { sortContractsChronologically } from "../utils/contractGen";
+import { contractLifecycleStatus, daysUntilExpiry } from "../utils/contractExpiry";
 import { ContractAutocomplete } from "./ContractAutocomplete";
 
 const CUSTOM_TEMPLATE_ID = "__custom__";
@@ -46,13 +47,19 @@ export function NewStructureForm({
   const [customLegs, setCustomLegs] = useState<CustomLegRow[]>([{ contract_id: "", ratio: 1 }]);
 
   // Anchor selection only ever needs outright months — structure-level
-  // quote contracts (already-created Fly/Spread products) aren't valid anchors.
+  // quote contracts (already-created Fly/Spread products) aren't valid
+  // anchors. Also excludes months already past their real last-trading-day
+  // (utils/contractExpiry.ts) — only give the user active contracts to
+  // trade; a Near Expiry one stays selectable, just flagged in the picker.
   const instrumentContracts = useMemo(
     () => sortContractsChronologically(contracts.filter((c) => c.instrument_id === instrumentId)),
     [contracts, instrumentId]
   );
   const anchorableContracts = useMemo(
-    () => instrumentContracts.filter((c) => !c.kind || c.kind === "Outright"),
+    () =>
+      instrumentContracts.filter(
+        (c) => (!c.kind || c.kind === "Outright") && contractLifecycleStatus(c.expiry_date) !== "Expired"
+      ),
     [instrumentContracts]
   );
 
@@ -88,6 +95,12 @@ export function NewStructureForm({
   }
 
   const contractLabelById = useMemo(() => new Map(instrumentContracts.map((c) => [c.id, c.month_label])), [instrumentContracts]);
+
+  function nearExpiryHint(c: Contract): string | undefined {
+    if (contractLifecycleStatus(c.expiry_date) !== "Near Expiry") return undefined;
+    const days = daysUntilExpiry(c.expiry_date);
+    return days !== undefined ? `expires in ${days}d` : "near expiry";
+  }
 
   // Auto-suggest a structure name, unless the user has typed their own.
   useEffect(() => {
@@ -253,9 +266,11 @@ export function NewStructureForm({
                 contracts={anchorableContracts}
                 value={anchorContractId}
                 onChange={setAnchorContractId}
+                hintFor={nearExpiryHint}
               />
               <p className="helper-text">
-                Every leg is derived from this one contract — type a month (e.g. "Apr26") and press Enter.
+                Every leg is derived from this one contract — type a month (e.g. "Apr26") and press Enter. Only
+                contracts still trading are offered; one nearing its last trading day is flagged, not hidden.
               </p>
             </div>
 
@@ -297,6 +312,7 @@ export function NewStructureForm({
                   contracts={anchorableContracts}
                   value={leg.contract_id}
                   onChange={(id) => updateCustomLeg(idx, { contract_id: id })}
+                  hintFor={nearExpiryHint}
                 />
                 <input
                   type="number"

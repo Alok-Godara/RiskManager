@@ -1,6 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { repository } from "./index";
 import { parseMonthLabel, buildRollingContracts, sortContractsChronologically } from "../utils/contractGen";
+import { lastTradingDay } from "../utils/contractExpiry";
 
 const ROLLING_MONTHS = 24;
 
@@ -48,16 +49,39 @@ export async function runMigrations(): Promise<void> {
     }
   }
 
-  // Pre-V3 contracts have no `expiry_date`, which the anchor + month_offset
-  // logic (utils/templateExpansion.ts) needs to sort contracts
-  // chronologically. Backfill it by parsing the month label.
+  // Pre-expiry-rules contracts have `expiry_date` set to the 1st of their
+  // month (a placeholder) or nothing at all — neither is a real
+  // last-trading-day (see utils/contractExpiry.ts). Recompute every
+  // outright's from the actual exchange rule, so front-month / Active vs.
+  // Near Expiry vs. Expired logic is correct for contracts created before
+  // this existed. Ordering still holds either way (LTDs increase
+  // monotonically with delivery month), so nothing downstream breaks
+  // mid-migration.
+  const instrumentsById = new Map(instruments.map((i) => [i.id, i]));
   const contracts = await repository.getContracts();
+  const correctedExpiryByContractId = new Map<string, string>();
+
   for (const c of contracts) {
-    if (!c.expiry_date) {
-      const parsed = parseMonthLabel(c.month_label);
-      if (parsed) {
-        await repository.upsertContract({ ...c, expiry_date: parsed.toISOString() });
-      }
+    if (c.kind && c.kind !== "Outright") continue; // Structure quotes handled below, from their anchor
+    const instrument = instrumentsById.get(c.instrument_id);
+    const parsed = parseMonthLabel(c.month_label);
+    if (!instrument || !parsed) continue;
+    const correctExpiry = lastTradingDay(instrument, parsed).toISOString();
+    correctedExpiryByContractId.set(c.id, correctExpiry);
+    if (c.expiry_date !== correctExpiry) {
+      await repository.upsertContract({ ...c, expiry_date: correctExpiry });
+    }
+  }
+
+  // Structure-kind contracts (e.g. "Nov26 Fly") snapshot their anchor's
+  // expiry_date at creation time (StructureQuoteEngine.resolveAsOneUnit) —
+  // refresh that snapshot now that the anchor's own value may have just
+  // been corrected above.
+  for (const c of contracts) {
+    if (!c.kind || c.kind !== "Structure" || !c.anchor_contract_id) continue;
+    const anchorExpiry = correctedExpiryByContractId.get(c.anchor_contract_id);
+    if (anchorExpiry && c.expiry_date !== anchorExpiry) {
+      await repository.upsertContract({ ...c, expiry_date: anchorExpiry });
     }
   }
 
@@ -91,7 +115,7 @@ export async function ensureRollingContracts(): Promise<void> {
     const existing = sortContractsChronologically(await repository.getContractsByInstrument(instrument.id));
     const existingLabels = new Set(existing.map((c) => c.month_label));
 
-    const wanted = buildRollingContracts(instrument.id, instrument.symbol, ROLLING_MONTHS, now);
+    const wanted = buildRollingContracts(instrument, ROLLING_MONTHS, now);
     const missing = wanted.filter((c) => !existingLabels.has(c.month_label));
     for (const c of missing) {
       await repository.upsertContract({ ...c, id: uuid() });
