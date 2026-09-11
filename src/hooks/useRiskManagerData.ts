@@ -64,24 +64,19 @@ export function useRiskManagerData() {
       // 1-minute candle updating in real time rather than waiting a full
       // minute between prices.
       //
-      // 1s as requested. Live-tested against the real API: a burst of ~15
-      // requests in a few seconds triggers a 429, with recovery taking 90s+
-      // of complete silence — so at this cadence you WILL see periodic
-      // pauses rather than a perfectly steady 1s cadence. MarketDataService
-      // handles this by backing off automatically (never spamming through
-      // a cooldown) and resuming 1s polling the moment it's over — see
-      // Settings -> API Configuration / the sidebar tooltip for the exact
-      // reason and retry time whenever it isn't "Live". If your token's
-      // actual sustained rate limit turns out lower than that burst
-      // threshold, you'll see this more often; raise pollMs here to trade
-      // update speed for fewer cooldowns.
+      // 30s per request. Comfortably under the ~15-request burst limit
+      // observed in live testing (2 req/min vs. that threshold), so this
+      // cadence shouldn't trigger the rate-limit backoff in normal use —
+      // MarketDataService still handles it gracefully (pausing and
+      // resuming on its own) if it ever does. See Settings -> API
+      // Configuration / the sidebar tooltip for feed health at any time.
       MarketDataService.start(async () => {
         const legs = await repository.getAllLegs();
         const activeLegs = legs.filter((l) => l.is_active);
         const contractIds = new Set(activeLegs.map((l) => l.contract_id));
         const allContracts = await repository.getContracts();
         return allContracts.filter((c) => contractIds.has(c.id));
-      }, __QH_CONFIGURED__ ? 1000 : 4000);
+      }, __QH_CONFIGURED__ ? 30000 : 4000);
 
       unsub = MarketDataService.onUpdate(() => {
         reload();

@@ -27,7 +27,7 @@ export function ApiSettings() {
           <div className="stat-value">{marketData.providerName}</div>
           <div className="stat-sub">
             {isQuantHub
-              ? "QuantHub 1-minute OHLC, polled every 1s for contracts in open positions — pauses automatically if the token gets rate-limited, then resumes"
+              ? "QuantHub 1-minute OHLC, polled every 30s for contracts in open positions — pauses automatically if the token gets rate-limited, then resumes"
               : "Simulated prices — set QH_API_TOKEN in .env and restart to use QuantHub"}
           </div>
         </div>
