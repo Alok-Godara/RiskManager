@@ -86,6 +86,33 @@ export interface MarketDataStatus {
 type Listener = () => void;
 
 /**
+ * Backoff bounds for rate-limit cooldowns (see asRateLimitSignal). Measured
+ * live against the real API: a burst of ~15 requests in a few seconds
+ * triggers a 429, and recovery took over 90s of complete silence — so the
+ * cap here is deliberately generous rather than tuned to guesswork.
+ */
+const MIN_BACKOFF_MS = 5_000;
+const MAX_BACKOFF_MS = 90_000;
+
+/**
+ * Duck-typed rate-limit signal: a provider can throw any error shaped like
+ * this (see services/quantHub/client.ts QuantHubError) without
+ * MarketDataService importing that provider's own error class — keeping
+ * this file provider-agnostic while still backing off automatically
+ * instead of hammering a rate-limited API every tick.
+ */
+interface RateLimitSignal {
+  rateLimited: true;
+  retryAfterMs?: number;
+}
+function asRateLimitSignal(err: unknown): RateLimitSignal | undefined {
+  if (err && typeof err === "object" && (err as Partial<RateLimitSignal>).rateLimited === true) {
+    return err as RateLimitSignal;
+  }
+  return undefined;
+}
+
+/**
  * MarketDataService: the ONLY place that knows how prices are fetched.
  * Today it runs a setInterval in the browser. When deployed online, this
  * same class's fetch/update logic can move into a background worker or
@@ -104,6 +131,9 @@ class MarketDataServiceImpl {
     pricedCount: 0,
     requestedCount: 0,
   };
+  /** Epoch ms — ticks are skipped until this passes (see asRateLimitSignal). */
+  private cooldownUntil = 0;
+  private consecutiveRateLimits = 0;
 
   setProvider(provider: MarketDataProvider) {
     this.provider = provider;
@@ -182,10 +212,34 @@ class MarketDataServiceImpl {
         requestedCount: contracts.length,
       });
 
+      this.consecutiveRateLimits = 0;
       if (priced > 0) this.notify();
     } catch (err) {
+      const rateLimit = asRateLimitSignal(err);
+      if (rateLimit) {
+        // Back off instead of retrying at the normal cadence and getting
+        // rate-limited again next tick — grows with consecutive hits
+        // (capped) unless the server told us exactly how long to wait.
+        this.consecutiveRateLimits++;
+        const backoffMs =
+          rateLimit.retryAfterMs ?? Math.min(MAX_BACKOFF_MS, MIN_BACKOFF_MS * 2 ** (this.consecutiveRateLimits - 1));
+        this.cooldownUntil = Date.now() + backoffMs;
+        console.warn(`MarketDataService: rate-limited, backing off ${Math.round(backoffMs / 1000)}s`);
+        this.setStatus({
+          providerName: this.provider.name,
+          state: "error",
+          lastSuccessAt: this.status.lastSuccessAt,
+          quoteAsOf: this.status.quoteAsOf,
+          lastError: `Rate-limited by ${this.provider.name} — retrying in ${Math.ceil(backoffMs / 1000)}s.`,
+          pricedCount: 0,
+          requestedCount: contracts.length,
+        });
+        return;
+      }
+
       // Never let a bad tick crash the dashboard — the last known prices
       // stay on screen and the sidebar shows the feed as unhealthy.
+      this.consecutiveRateLimits = 0;
       const message = err instanceof Error ? err.message : "Market data fetch failed";
       console.error("MarketDataService.refresh failed:", err);
       this.setStatus({
@@ -208,12 +262,22 @@ class MarketDataServiceImpl {
   start(getRequiredContracts: () => Promise<Contract[]>, pollMs = 4000) {
     this.stop();
     this.pollMs = pollMs;
+    let busy = false;
     const tick = async () => {
+      // At a 1s cadence a slow round trip can outlast the interval — skip
+      // this tick rather than let requests pile up concurrently.
+      if (busy) return;
+      // Skip entirely while backing off from a rate limit — no request at
+      // all, not even a cheap one, until the cooldown passes.
+      if (Date.now() < this.cooldownUntil) return;
+      busy = true;
       try {
         const contracts = await getRequiredContracts();
         await this.refresh(contracts);
       } catch (err) {
         console.error("MarketDataService tick failed:", err);
+      } finally {
+        busy = false;
       }
     };
     tick();

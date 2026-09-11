@@ -11,16 +11,25 @@
  * when deploying.
  */
 
-export type QuantHubErrorKind = "auth" | "http" | "network" | "parse";
+export type QuantHubErrorKind = "auth" | "rate_limit" | "http" | "network" | "parse";
 
 export class QuantHubError extends Error {
   readonly kind: QuantHubErrorKind;
   readonly status?: number;
-  constructor(kind: QuantHubErrorKind, message: string, status?: number) {
+  /**
+   * Duck-typed rate-limit signal MarketDataService recognizes without
+   * importing this (provider-specific) class — see asRateLimitSignal there.
+   */
+  readonly rateLimited: boolean;
+  /** For kind "rate_limit": ms to wait before retrying, from Retry-After if the server sent one. */
+  readonly retryAfterMs?: number;
+  constructor(kind: QuantHubErrorKind, message: string, status?: number, retryAfterMs?: number) {
     super(message);
     this.name = "QuantHubError";
     this.kind = kind;
     this.status = status;
+    this.rateLimited = kind === "rate_limit";
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -40,6 +49,8 @@ export interface FetchOhlcOptions {
   interval?: string; // 1M / 5M / 1H / 1D
   count?: number; // candles per instrument
   extraFields?: string;
+  /** End timestamp, unix seconds — pins the request to "now" so we always get the freshest bar. */
+  end?: number;
   signal?: AbortSignal;
 }
 
@@ -229,7 +240,7 @@ export function latestClose(candles: OhlcCandle[] | undefined): number | undefin
  */
 export async function fetchOhlc(
   instruments: string[],
-  { interval = "1M", count = 2, extraFields = "buyvolume,sellvolume", signal }: FetchOhlcOptions = {}
+  { interval = "1M", count = 1, extraFields = "buyvolume,sellvolume", end, signal }: FetchOhlcOptions = {}
 ): Promise<Record<string, OhlcCandle[]>> {
   if (instruments.length === 0) return {};
 
@@ -239,6 +250,7 @@ export async function fetchOhlc(
     count: String(count),
     extraFields,
   });
+  if (end !== undefined) params.set("end", String(Math.floor(end)));
 
   let response: Response;
   try {
@@ -255,6 +267,16 @@ export async function fetchOhlc(
       "auth",
       "QuantHub rejected the credentials — check QH_API_TOKEN in .env (and restart the dev server).",
       response.status
+    );
+  }
+  if (response.status === 429) {
+    const retryAfterHeader = response.headers.get("retry-after");
+    const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : undefined;
+    throw new QuantHubError(
+      "rate_limit",
+      "QuantHub is rate-limiting this token — backing off automatically.",
+      429,
+      retryAfterMs && Number.isFinite(retryAfterMs) ? retryAfterMs : undefined
     );
   }
   if (!response.ok) {

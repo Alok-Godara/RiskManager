@@ -26,7 +26,7 @@ export function ApiSettings() {
           <div className="stat-value">{marketData.providerName}</div>
           <div className="stat-sub">
             {isQuantHub
-              ? "QuantHub 1-minute OHLC, polled every 15s for contracts in open positions"
+              ? "QuantHub 1-minute OHLC, polled every 5s for contracts in open positions (throttled to stay under the token's rate limit)"
               : "Simulated prices — set QH_API_TOKEN in .env and restart to use QuantHub"}
           </div>
         </div>
@@ -57,9 +57,11 @@ export function ApiSettings() {
       <p className="helper-text">
         QuantHub codes are built from each instrument's <strong>QuantHub / exchange code</strong> (Settings →
         Instruments) plus the standard futures month code — e.g. code <code>CO</code> + Nov 2026 →{" "}
-        <code>COX26</code>. If an instrument shows no price, that code is usually what needs fixing. The Bearer token
-        lives only in <code>.env</code> as <code>QH_API_TOKEN</code> and is injected server-side by the dev proxy, so
-        it never reaches the browser bundle.
+        <code>COX26</code>. A directly-traded structure (a Fly, Calendar Spread, ...) is requested as the exchange's
+        own composite code for that shape — e.g. <code>COX26-Z26-F27</code> for a Brent Nov26 Fly — never derived by
+        summing outright legs. If an instrument or structure shows no price, that code is usually what needs fixing.
+        The Bearer token lives only in <code>.env</code> as <code>QH_API_TOKEN</code> and is injected server-side by
+        the dev proxy, so it never reaches the browser bundle.
       </p>
     </div>
   );

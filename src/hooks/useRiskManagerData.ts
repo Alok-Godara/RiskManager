@@ -59,16 +59,26 @@ export function useRiskManagerData() {
       if (__QH_CONFIGURED__) MarketDataService.setProvider(new QuantHubProvider());
 
       // Start continuous market data polling for exactly the contracts
-      // required by currently open positions (spec section 3). QuantHub
-      // serves 1-minute candles, so polling it faster than ~15s only adds
-      // load without adding information.
+      // required by currently open positions (spec section 3). Each
+      // QuantHub request is pinned to `end=now`, so polling picks up the
+      // 1-minute candle updating in real time rather than waiting a full
+      // minute between prices.
+      //
+      // 5s, not 1s: live-tested against the real API, a burst of ~15
+      // requests in a few seconds triggers a 429, and recovery took over
+      // 90s of complete silence (see MarketDataService's rate-limit
+      // backoff). One tick is one request (all open-position contracts are
+      // batched together), so 5s keeps every normal tick under that
+      // threshold with margin instead of spending most of its time in a
+      // cooldown loop. MarketDataService.start's pollMs is a plain
+      // parameter — lower this if your token's actual limit is higher.
       MarketDataService.start(async () => {
         const legs = await repository.getAllLegs();
         const activeLegs = legs.filter((l) => l.is_active);
         const contractIds = new Set(activeLegs.map((l) => l.contract_id));
         const allContracts = await repository.getContracts();
         return allContracts.filter((c) => contractIds.has(c.id));
-      }, __QH_CONFIGURED__ ? 15000 : 4000);
+      }, __QH_CONFIGURED__ ? 5000 : 4000);
 
       unsub = MarketDataService.onUpdate(() => {
         reload();
