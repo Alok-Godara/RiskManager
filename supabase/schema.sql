@@ -243,6 +243,38 @@ create table if not exists api_configs (
   enabled boolean not null default true
 );
 
+-- ---------------------------------------------------------------------------
+-- settlement_prices — daily official closes per outright contract, from the
+-- reference-data settlement feed (services/settlementData/). The history
+-- engines/CorrelationEngine.ts builds structure-level daily series and
+-- rolling correlations from. `id` is app-generated as
+-- `${contract_id}::${date}` (not a random uuid) so re-fetching an
+-- already-stored date upserts in place instead of duplicating.
+-- ---------------------------------------------------------------------------
+create table if not exists settlement_prices (
+  id text primary key,
+  contract_id uuid not null references contracts(id) on delete cascade,
+  date date not null,
+  price double precision not null,
+  source text not null,
+  created_at timestamptz not null default now(),
+  unique (contract_id, date)
+);
+create index if not exists settlement_prices_contract_id_idx on settlement_prices(contract_id);
+create index if not exists settlement_prices_date_idx on settlement_prices(date);
+
+-- ---------------------------------------------------------------------------
+-- app_settings — single row (id "default") for small cross-device
+-- preferences, e.g. the Structures -> Portfolio Correlation & Concentration
+-- warning thresholds. Repository-backed rather than localStorage so it
+-- stays in sync the same way the rest of the app's data does.
+-- ---------------------------------------------------------------------------
+create table if not exists app_settings (
+  id text primary key,
+  correlation_warning_threshold double precision not null default 0.7,
+  concentration_risk_threshold double precision not null default 0.65
+);
+
 -- ============================================================================
 -- Row Level Security — open policies for the anon key (single-user, no-login
 -- design today). See the security note at the top of this file.
@@ -260,6 +292,8 @@ alter table risk_allocations enable row level security;
 alter table stop_loss_history enable row level security;
 alter table audit_events enable row level security;
 alter table api_configs enable row level security;
+alter table settlement_prices enable row level security;
+alter table app_settings enable row level security;
 
 do $$
 declare
@@ -269,7 +303,8 @@ begin
     select unnest(array[
       'instruments','contracts','structure_templates','structures','structure_legs',
       'executions','positions','market_prices','realized_pnl_events','risk_allocations',
-      'stop_loss_history','audit_events','api_configs'
+      'stop_loss_history','audit_events','api_configs',
+      'settlement_prices','app_settings'
     ])
   loop
     execute format('drop policy if exists "allow all (anon)" on %I;', t);

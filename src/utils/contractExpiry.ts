@@ -19,23 +19,23 @@ import type { Instrument } from "../types/domain";
 // roll date. Documented here rather than silently assumed.
 // ---------------------------------------------------------------------------
 
-function isWeekday(d: Date): boolean {
+export function isWeekday(d: Date): boolean {
   const day = d.getDay();
   return day !== 0 && day !== 6;
 }
 
-function addDays(d: Date, days: number): Date {
+export function addDays(d: Date, days: number): Date {
   const next = new Date(d);
   next.setDate(next.getDate() + days);
   return next;
 }
 
-function startOfDay(d: Date): Date {
+export function startOfDay(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
 /** Walks backward from `d` (inclusive) to the nearest Mon-Fri. */
-function businessDayOnOrBefore(d: Date): Date {
+export function businessDayOnOrBefore(d: Date): Date {
   let cur = d;
   while (!isWeekday(cur)) cur = addDays(cur, -1);
   return cur;

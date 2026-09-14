@@ -12,6 +12,8 @@ import type {
   StopLossRecord,
   AuditEvent,
   ApiConfig,
+  SettlementPrice,
+  AppSettings,
   UUID,
 } from "../types/domain";
 
@@ -96,6 +98,18 @@ export interface DataRepository {
   // API Config
   getApiConfigs(): Promise<ApiConfig[]>;
   upsertApiConfig(config: ApiConfig): Promise<void>;
+
+  // Settlement Prices (historical daily closes for correlation analysis —
+  // see services/settlementData/ and engines/CorrelationEngine.ts).
+  // upsertSettlementPrice is idempotent: the caller sets a deterministic
+  // `id` (`${contract_id}::${date}`), so re-fetching an already-stored date
+  // overwrites in place rather than duplicating.
+  getSettlementPricesByContracts(contractIds: UUID[]): Promise<SettlementPrice[]>;
+  upsertSettlementPrice(record: SettlementPrice): Promise<void>;
+
+  // App Settings (single row, id "default")
+  getAppSettings(): Promise<AppSettings | undefined>;
+  upsertAppSettings(settings: AppSettings): Promise<void>;
 
   // Bulk utility (for seeding / import-export / future migration)
   exportAll(): Promise<Record<string, unknown>>;

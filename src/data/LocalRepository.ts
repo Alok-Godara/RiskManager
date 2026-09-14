@@ -14,6 +14,8 @@ import type {
   StopLossRecord,
   AuditEvent,
   ApiConfig,
+  SettlementPrice,
+  AppSettings,
   UUID,
 } from "../types/domain";
 
@@ -191,6 +193,24 @@ export class LocalRepository implements DataRepository {
   }
   async upsertApiConfig(config: ApiConfig) {
     return putOne("api_configs", config);
+  }
+
+  // Settlement Prices
+  async getSettlementPricesByContracts(contractIds: UUID[]) {
+    const ids = new Set(contractIds);
+    const all = await getAll<SettlementPrice>("settlement_prices");
+    return all.filter((s) => ids.has(s.contract_id));
+  }
+  async upsertSettlementPrice(record: SettlementPrice) {
+    return putOne("settlement_prices", record);
+  }
+
+  // App Settings
+  async getAppSettings() {
+    return getOne<AppSettings>("app_settings", "default");
+  }
+  async upsertAppSettings(settings: AppSettings) {
+    return putOne("app_settings", settings, "default");
   }
 
   // Bulk

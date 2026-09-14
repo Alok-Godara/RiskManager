@@ -14,6 +14,8 @@ import type {
   StopLossRecord,
   AuditEvent,
   ApiConfig,
+  SettlementPrice,
+  AppSettings,
   UUID,
 } from "../types/domain";
 
@@ -267,6 +269,29 @@ export class SupabaseRepository implements DataRepository {
     if (error) throw error;
   }
 
+  // Settlement Prices
+  async getSettlementPricesByContracts(contractIds: UUID[]) {
+    if (contractIds.length === 0) return [];
+    const { data, error } = await this.db().from("settlement_prices").select("*").in("contract_id", contractIds);
+    if (error) throw error;
+    return (data ?? []) as SettlementPrice[];
+  }
+  async upsertSettlementPrice(record: SettlementPrice) {
+    const { error } = await this.db().from("settlement_prices").upsert(record, { onConflict: "id" });
+    if (error) throw error;
+  }
+
+  // App Settings
+  async getAppSettings() {
+    const { data, error } = await this.db().from("app_settings").select("*").eq("id", "default").maybeSingle();
+    if (error) throw error;
+    return (data ?? undefined) as AppSettings | undefined;
+  }
+  async upsertAppSettings(settings: AppSettings) {
+    const { error } = await this.db().from("app_settings").upsert(settings, { onConflict: "id" });
+    if (error) throw error;
+  }
+
   // Bulk
   private readonly TABLES = [
     "instruments",
@@ -282,6 +307,8 @@ export class SupabaseRepository implements DataRepository {
     "stop_loss_history",
     "audit_events",
     "api_configs",
+    "settlement_prices",
+    "app_settings",
   ] as const;
 
   async exportAll() {
@@ -309,6 +336,8 @@ export class SupabaseRepository implements DataRepository {
       stop_loss_history: "id",
       audit_events: "id",
       api_configs: "id",
+      settlement_prices: "id",
+      app_settings: "id",
     };
     for (const table of this.TABLES) {
       const pk = pkByTable[table];

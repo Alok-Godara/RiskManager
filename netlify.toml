@@ -12,6 +12,12 @@
   path = "/qh-api/*"
   function = "qh-api-proxy"
 
+# Reference-data settlement proxy (netlify/edge-functions/refdata-api-proxy.ts)
+# — see the comment at the top of that file re: REFDATA_API_URL/TOKEN.
+[[edge_functions]]
+  path = "/refdata-api/*"
+  function = "refdata-api-proxy"
+
 [[redirects]]
   from = "/*"
   to = "/index.html"

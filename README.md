@@ -115,6 +115,10 @@ src/
                            entry/exit/edit/delete, audit log
     InstrumentEngine.ts    True contract-level net exposure across all open structures
     PortfolioEngine.ts     Top-level portfolio roll-up
+    CorrelationEngine.ts   Pure math: daily structure series from settlement
+                           prices, rolling Pearson correlation, portfolio
+                           concentration — see "Portfolio Correlation &
+                           Concentration" below
   services/
     MarketDataService.ts  Provider-agnostic price fetching, decoupled from UI.
                            Polls only the contracts required by open positions,
@@ -125,16 +129,30 @@ src/
       QuantHubProvider.ts  The live price source — outrights and directly-
                            traded structure quotes (composite codes) both
                            requested straight from the API, never derived
+    settlementData/
+      client.ts             Settlement-price HTTP client, tolerant parsing
+      settlementHistoryService.ts  Fetches/persists just the missing
+                           (contract, date) settlements — incremental, cheap
+                           to call repeatedly
+      correlationContext.ts  Ties fetching to CorrelationEngine: ensures
+                           history, builds every open structure's (and an
+                           optional candidate's) daily series in one pass
   utils/
     priceAllocation.ts    Distributes a net structure price across legs
     contractExpiry.ts     Real exchange last-trading-day rules per product —
                            front month, Active/Near Expiry/Expired status
     contractGen.ts         Generates monthly contracts for a new instrument,
                            starting at the real tradeable front month
+    tradingDays.ts         "Last complete trading day" / N-trading-days-back —
+                           for settlement dates, distinct from contract LTDs
   components/             UI — reads only through engines/repository, never
                            touches IndexedDB or fetch() directly
-    settings/              Instrument + Structure Template management
-  hooks/useRiskManagerData.ts   Wires engines -> React state, drives polling
+    settings/              Instrument + Structure Template + Correlation
+                           threshold management
+  hooks/
+    useRiskManagerData.ts        Wires engines -> React state, drives polling
+    usePortfolioCorrelation.ts   Drives the Structures-tab correlation panel
+    useNewTradeCorrelation.ts    Drives the New Structure form's live preview
 ```
 
 ### Why this survives the move to a web app
@@ -218,6 +236,75 @@ contract-exposure view — never for pricing or P&L. A "Custom (build
 manually)" option is always available for one-off structures that don't fit
 a saved template.
 
+## Portfolio Correlation & Concentration
+
+Structures → Portfolio Correlation & Concentration answers two questions:
+"is a new trade diversifying my book or adding to an existing exposure,"
+and "is the whole portfolio quietly becoming one big directional bet."
+It's driven entirely by historical **settlement** prices (official daily
+closes), not live/intraday quotes — this is a day-over-day co-movement
+read, not a real-time one.
+
+**How a structure's history is built.** Each open structure's daily
+"value" is `sum(ratio_i * outright_settlement_i)` over its legs — the same
+composite-structure-price convention used everywhere else in this app
+(an entry's `avg_price`, a QuantHub-derived structure quote). Any leg
+that's itself a directly-quoted structure (e.g. built from Flies) is
+decomposed to its outright legs first, purely for this reconstruction —
+settlements exist per outright contract, not per user-defined shape. Since
+ratio signs already encode Long/Short, correlating two structures' daily
+value *changes* is directly a "do these positions' P&L move together" read.
+
+**The math.** `engines/CorrelationEngine.ts` computes a Pearson correlation
+coefficient (-1..1) between two structures' daily diffs over rolling 5/15/30
+trading-day windows — undefined (not 0) when there's too little data or no
+variance, since 0 would misleadingly read as "confirmed unrelated" rather
+than "can't tell." A new candidate is compared against every open structure,
+risk-weighted by `current_dollar_risk`, to a single verdict (Diversifying /
+Concentrating / Neutral). Portfolio-wide concentration is the risk-weighted
+fraction of *all* pairwise correlations that are positive (mutually
+reinforcing) rather than negative (offsetting) — deliberately built from the
+correlation matrix itself rather than a synthetic "market index," so it
+needs no extra assumptions. Both warning thresholds are configurable
+(Settings → Correlation & Concentration).
+
+**Where it shows up:** live, before you submit, in the New Structure form
+("Portfolio Impact" — this is the "before taking a position, understand how
+it interacts" requirement) via `hooks/useNewTradeCorrelation.ts`; and
+portfolio-wide, always visible above the structure list, via
+`hooks/usePortfolioCorrelation.ts`. Both re-check every 15 minutes (settlements
+publish once/day) so newly-published settlements get picked up without a
+manual reload, and neither depends on the raw `snapshots`/`contracts` array
+references passed down (those get new identities on every background
+market-data poll) — see the comments in both hooks for the same
+unstable-reference pitfall already fixed twice elsewhere in this codebase.
+
+**Settlement data source.** `GET {base}/Catalog/Instrument/SettlementPrice
+?date=YYYY-MM-DD`, proxied the same way as QuantHub (same-origin
+`/refdata-api` path; `netlify/edge-functions/refdata-api-proxy.ts` when
+deployed — see .env.example for `REFDATA_API_TOKEN`/`REFDATA_API_URL`).
+Two things to know:
+
+1. **`refdataapi` is a bare internal hostname with no public DNS entry.**
+   That's fine for local dev on the corp network, but a deployed Netlify
+   site's Edge Function runs on Netlify's own network and cannot reach it as-is
+   — set `REFDATA_API_URL` to something Netlify's edge can actually reach
+   (a public endpoint, or your own reverse-proxy/tunnel) or the deployed
+   correlation feature has no data to work with.
+2. **No sample response was available while building this**, unlike the
+   QuantHub integration (which was corrected against a real payload).
+   `services/settlementData/client.ts`'s `normalizeSettlementResponse` is
+   deliberately tolerant of several plausible shapes rather than committing
+   to one blind guess. If prices don't come through, capture one real
+   response and that's the one file that should need fixing — the rest of
+   the pipeline (fetching, persistence, the correlation math) is
+   independently unit-verified and doesn't change either way.
+
+Instrument → settlement instrument code reuses the same convention as
+QuantHub (`exchange_code` + standard futures month code, e.g. `CO` + Nov
+2026 → `COX26`) — an assumption about this endpoint, not a confirmed fact,
+and the first thing to check if a contract's settlements never show up.
+
 ## Current feature set (Version 5)
 
 - Supabase/Postgres (or local IndexedDB) persistence behind a single `DataRepository`
@@ -259,3 +346,10 @@ a saved template.
   polled automatically and scoped only to contracts in open positions, with
   feed health surfaced in the sidebar and Settings → API Configuration —
   falling back to simulated prices when no token is configured
+- Portfolio Correlation & Concentration (Structures tab, above the structure
+  list): rolling 5/15/30-day settlement-based correlation between every open
+  structure, a live "Portfolio Impact" preview in New Structure before you
+  submit (diversifying vs. concentrating, per existing structure), and a
+  portfolio-wide one-directional-exposure warning naming the driving
+  structure pairs — thresholds configurable in Settings → Correlation &
+  Concentration (see "Portfolio Correlation & Concentration" above)

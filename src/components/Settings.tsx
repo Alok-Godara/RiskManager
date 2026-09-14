@@ -3,8 +3,9 @@ import type { Instrument, StructureTemplate } from "../types/domain";
 import { InstrumentSettings } from "./settings/InstrumentSettings";
 import { StructureTemplateSettings } from "./settings/StructureTemplateSettings";
 import { ApiSettings } from "./settings/ApiSettings";
+import { RiskSettings } from "./settings/RiskSettings";
 
-type SettingsTab = "instruments" | "templates" | "api";
+type SettingsTab = "instruments" | "templates" | "api" | "risk";
 
 export function Settings({
   instruments,
@@ -29,11 +30,15 @@ export function Settings({
         <button className={tab === "api" ? "active" : ""} onClick={() => setTab("api")}>
           API Configuration
         </button>
+        <button className={tab === "risk" ? "active" : ""} onClick={() => setTab("risk")}>
+          Correlation &amp; Concentration
+        </button>
       </div>
 
       {tab === "instruments" && <InstrumentSettings instruments={instruments} onChanged={onChanged} />}
       {tab === "templates" && <StructureTemplateSettings templates={templates} onChanged={onChanged} />}
       {tab === "api" && <ApiSettings />}
+      {tab === "risk" && <RiskSettings />}
     </div>
   );
 }

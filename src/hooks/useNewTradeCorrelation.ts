@@ -1,0 +1,82 @@
+import { useEffect, useMemo, useState } from "react";
+import type { Contract, CorrelationWindow, Instrument, NewTradeCorrelationAnalysis, StructureSnapshot, StructureTemplate, UUID } from "../types/domain";
+import { CORRELATION_WINDOWS } from "../types/domain";
+import { CorrelationEngine } from "../engines/CorrelationEngine";
+import { buildCandidateSeries, buildCorrelationContext, getCorrelationThresholds } from "../services/settlementData/correlationContext";
+
+export interface NewTradeCorrelationState {
+  loading: boolean;
+  error?: string;
+  analysesByWindow: Record<CorrelationWindow, NewTradeCorrelationAnalysis> | null;
+  thresholds: { correlation: number; concentration: number };
+}
+
+/**
+ * Live "how would this candidate structure interact with my existing book"
+ * preview, driven from NewStructureForm before the user submits. Same
+ * unstable-reference caution as usePortfolioCorrelation: depends on string
+ * signatures of the candidate legs and the open-structure book, not the raw
+ * array/prop references (which get new identities on every background
+ * reload).
+ */
+export function useNewTradeCorrelation(
+  candidateWeights: { contract_id: UUID; ratio: number }[],
+  snapshots: StructureSnapshot[],
+  contracts: Contract[],
+  templates: StructureTemplate[],
+  instruments: Instrument[]
+): NewTradeCorrelationState {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [analysesByWindow, setAnalysesByWindow] = useState<Record<CorrelationWindow, NewTradeCorrelationAnalysis> | null>(null);
+  const [thresholds, setThresholds] = useState({ correlation: 0.7, concentration: 0.65 });
+
+  const openStructures = useMemo(() => snapshots.filter((s) => s.structure.status !== "Fully Closed"), [snapshots]);
+  const structureSignature = useMemo(
+    () =>
+      openStructures
+        .map((s) => `${s.structure.id}:${s.structure.current_dollar_risk}:${s.legs.map((l) => `${l.leg.contract_id}=${l.leg.ratio}`).join(",")}`)
+        .sort()
+        .join("|"),
+    [openStructures]
+  );
+  const candidateSignature = useMemo(() => candidateWeights.map((w) => `${w.contract_id}=${w.ratio}`).sort().join(","), [candidateWeights]);
+
+  useEffect(() => {
+    if (candidateWeights.length === 0 || openStructures.length === 0) {
+      setAnalysesByWindow(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(undefined);
+      try {
+        const t = await getCorrelationThresholds();
+        if (cancelled) return;
+        setThresholds(t);
+
+        const withLegs = openStructures.map((s) => ({ structure: s.structure, legs: s.legs.map((l) => l.leg) }));
+        const context = await buildCorrelationContext(withLegs, contracts, templates, instruments, candidateWeights);
+        if (cancelled) return;
+
+        const candidateSeries = buildCandidateSeries(context, candidateWeights);
+        const byWindow = {} as Record<CorrelationWindow, NewTradeCorrelationAnalysis>;
+        for (const window of CORRELATION_WINDOWS) {
+          byWindow[window] = CorrelationEngine.analyzeNewTrade(candidateSeries, context.openStructures, window, t.correlation);
+        }
+        setAnalysesByWindow(byWindow);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to compute correlation preview");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidateSignature, structureSignature, contracts.length, templates.length, instruments.length]);
+
+  return { loading, error, analysesByWindow, thresholds };
+}

@@ -5,6 +5,8 @@ interface ImportMetaEnv {
   readonly VITE_SUPABASE_ANON_KEY?: string;
   /** Same-origin base path proxied to the QuantHub API. Defaults to "/qh-api". */
   readonly VITE_QH_API_BASE?: string;
+  /** Same-origin base path proxied to the settlement/refdata API. Defaults to "/refdata-api". */
+  readonly VITE_REFDATA_API_BASE?: string;
 }
 
 interface ImportMeta {

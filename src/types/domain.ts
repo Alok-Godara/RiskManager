@@ -280,6 +280,37 @@ export interface ApiConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Settlement Price: one instrument's official daily close for one outright
+// contract, from the reference-data settlement feed (see
+// services/settlementData/) — the historical series correlation analysis is
+// built from. `id` is deterministic (`${contract_id}::${date}`), not a
+// random UUID, so re-fetching an already-stored date upserts in place
+// instead of duplicating (see settlementHistoryService.ts).
+// ---------------------------------------------------------------------------
+export interface SettlementPrice {
+  id: UUID;
+  contract_id: UUID;
+  date: string; // "YYYY-MM-DD", the settlement's own trading date
+  price: number;
+  source: string;
+  created_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// App Settings: a single persisted row (id "default") for small,
+// cross-device user preferences that don't belong on any one entity — today
+// just the correlation/concentration warning thresholds (Structures ->
+// Portfolio Correlation & Concentration). Repository-backed like everything
+// else here (not localStorage), so it stays in sync across devices the same
+// way the rest of the app's data does.
+// ---------------------------------------------------------------------------
+export interface AppSettings {
+  id: UUID; // always "default"
+  correlation_warning_threshold: number; // 0..1 — pairwise |correlation| that triggers a warning
+  concentration_risk_threshold: number; // 0..1 — risk-weighted same-direction fraction that triggers a warning
+}
+
+// ---------------------------------------------------------------------------
 // Computed / view-model types (not persisted, produced by engines)
 // ---------------------------------------------------------------------------
 export interface LegSnapshot {
@@ -337,4 +368,48 @@ export interface PortfolioSummary {
   remaining_risk_capacity: number;
   open_structures: number;
   closed_structures: number;
+}
+
+// ---------------------------------------------------------------------------
+// Correlation & Concentration (see engines/CorrelationEngine.ts) — built
+// from settlement-price history, never live/intraday prices, since it's a
+// day-over-day co-movement read, not a real-time one.
+// ---------------------------------------------------------------------------
+export const CORRELATION_WINDOWS = [5, 15, 30] as const;
+export type CorrelationWindow = (typeof CORRELATION_WINDOWS)[number];
+
+export interface WindowCorrelation {
+  window: CorrelationWindow;
+  correlation?: number; // -1..1, undefined if too few paired observations
+  observations: number; // daily diffs actually used
+}
+
+export interface StructurePairCorrelation {
+  structure_a_id: UUID;
+  structure_a_name: string;
+  structure_b_id: UUID;
+  structure_b_name: string;
+  windows: WindowCorrelation[];
+}
+
+export interface NewTradeCorrelationAnalysis {
+  window: CorrelationWindow;
+  perStructure: { structure_id: UUID; structure_name: string; correlation?: number; observations: number }[];
+  // Risk-weighted average correlation vs the existing book at this window.
+  portfolioCorrelation?: number;
+  verdict: "Diversifying" | "Concentrating" | "Neutral" | "Insufficient data";
+  warnings: string[];
+}
+
+export interface PortfolioConcentrationAnalysis {
+  window: CorrelationWindow;
+  pairs: StructurePairCorrelation[];
+  highCorrelationPairs: StructurePairCorrelation[]; // subset of `pairs` over the warning threshold
+  // Risk-weighted fraction of pairwise exposure that's mutually
+  // reinforcing (positively correlated) rather than offsetting — see
+  // CorrelationEngine.analyzePortfolioConcentration for the exact formula.
+  sameDirectionRiskFraction?: number;
+  isConcentrated: boolean;
+  drivingPairs: StructurePairCorrelation[]; // top contributors to sameDirectionRiskFraction
+  warnings: string[];
 }

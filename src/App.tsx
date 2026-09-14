@@ -146,6 +146,7 @@ function App() {
               instruments={activeInstruments}
               contracts={contracts}
               templates={activeTemplates}
+              snapshots={snapshots}
               onCreated={() => {
                 reload();
                 setCreatingStructure(false);
@@ -157,6 +158,9 @@ function App() {
           {tab === "structures" && !selectedSnapshot && !creatingStructure && (
             <StructureList
               snapshots={snapshots}
+              contracts={contracts}
+              templates={templates}
+              instruments={instruments}
               onSelect={setSelectedStructureId}
               onNewStructure={() => setCreatingStructure(true)}
             />

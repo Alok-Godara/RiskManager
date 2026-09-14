@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Contract, Instrument, StructureTemplate } from "../types/domain";
+import type { Contract, Instrument, StructureSnapshot, StructureTemplate } from "../types/domain";
 import { StructureEngine } from "../engines/StructureEngine";
 import { StructureQuoteEngine } from "../engines/StructureQuoteEngine";
-import { previewLegs, type PreviewLeg } from "../utils/templateExpansion";
+import { previewLegs, expandToOutrights, type PreviewLeg } from "../utils/templateExpansion";
 import { sortContractsChronologically } from "../utils/contractGen";
 import { contractLifecycleStatus, daysUntilExpiry } from "../utils/contractExpiry";
 import { ContractAutocomplete } from "./ContractAutocomplete";
+import { NewTradeCorrelationPreview } from "./NewTradeCorrelationPreview";
 
 const CUSTOM_TEMPLATE_ID = "__custom__";
 
@@ -22,12 +23,14 @@ export function NewStructureForm({
   instruments,
   contracts,
   templates,
+  snapshots,
   onCreated,
   onCancel,
 }: {
   instruments: Instrument[];
   contracts: Contract[];
   templates: StructureTemplate[];
+  snapshots: StructureSnapshot[];
   onCreated: () => void;
   onCancel?: () => void;
 }) {
@@ -95,6 +98,27 @@ export function NewStructureForm({
   }
 
   const contractLabelById = useMemo(() => new Map(instrumentContracts.map((c) => [c.id, c.month_label])), [instrumentContracts]);
+
+  // The candidate's final OUTRIGHT exposure — independent of which base
+  // structure it'll actually trade through (that only affects HOW it's
+  // quoted, never the underlying risk), so this is the same decomposition
+  // InstrumentEngine/CorrelationEngine would derive from a created
+  // Structure-kind leg, computed here directly since nothing exists yet.
+  const candidateOutrightWeights = useMemo(() => {
+    if (isCustom) {
+      return customLegs.filter((l) => l.contract_id).map((l) => ({ contract_id: l.contract_id, ratio: l.ratio }));
+    }
+    if (!selectedTemplate || !anchorContractId) return [];
+    try {
+      return expandToOutrights(selectedTemplate, anchorContractId, instrumentContracts).map((d) => ({
+        contract_id: d.contract_id,
+        ratio: d.ratio * direction,
+      }));
+    } catch {
+      return [];
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCustom, customLegs, selectedTemplate, anchorContractId, instrumentContracts, direction]);
 
   function nearExpiryHint(c: Contract): string | undefined {
     if (contractLifecycleStatus(c.expiry_date) !== "Near Expiry") return undefined;
@@ -334,6 +358,14 @@ export function NewStructureForm({
             <p className="helper-text">Ratio sign sets direction — no separate Long/Short field needed.</p>
           </>
         )}
+
+        <NewTradeCorrelationPreview
+          candidateWeights={candidateOutrightWeights}
+          snapshots={snapshots}
+          contracts={contracts}
+          templates={templates}
+          instruments={instruments}
+        />
 
         {error && <p className="helper-text" style={{ color: "var(--red)" }}>{error}</p>}
 
