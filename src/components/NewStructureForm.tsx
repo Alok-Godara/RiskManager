@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Contract, Instrument, StructureSnapshot, StructureTemplate } from "../types/domain";
+import type { Contract, Instrument, StructureTemplate } from "../types/domain";
 import { StructureEngine } from "../engines/StructureEngine";
 import { StructureQuoteEngine } from "../engines/StructureQuoteEngine";
-import { previewLegs, expandToOutrights, type PreviewLeg } from "../utils/templateExpansion";
+import { previewLegs, type PreviewLeg } from "../utils/templateExpansion";
 import { sortContractsChronologically } from "../utils/contractGen";
 import { contractLifecycleStatus, daysUntilExpiry } from "../utils/contractExpiry";
 import { ContractAutocomplete } from "./ContractAutocomplete";
-import { NewTradeCorrelationPreview } from "./NewTradeCorrelationPreview";
 
 const CUSTOM_TEMPLATE_ID = "__custom__";
 
@@ -19,25 +18,27 @@ function isTrivialOutright(template: StructureTemplate): boolean {
   return template.legs.length === 1 && template.legs[0].ratio === 1 && template.legs[0].month_offset === 0;
 }
 
+// A structure has no direction of its own — every leg is built/preview'd at
+// the template's canonical ratio sign. Direction is chosen per entry (see
+// AddEntryModal), not here.
+const CANONICAL_DIRECTION = 1 as const;
+
 export function NewStructureForm({
   instruments,
   contracts,
   templates,
-  snapshots,
   onCreated,
   onCancel,
 }: {
   instruments: Instrument[];
   contracts: Contract[];
   templates: StructureTemplate[];
-  snapshots: StructureSnapshot[];
   onCreated: () => void;
   onCancel?: () => void;
 }) {
   const [instrumentId, setInstrumentId] = useState(instruments[0]?.id ?? "");
   const [templateId, setTemplateId] = useState<string>(templates[0]?.id ?? CUSTOM_TEMPLATE_ID);
   const [baseTemplateId, setBaseTemplateId] = useState<string>("");
-  const [direction, setDirection] = useState<1 | -1>(1);
   const [initialRisk, setInitialRisk] = useState<number>(500);
   const [name, setName] = useState("");
   const [nameEdited, setNameEdited] = useState(false);
@@ -91,34 +92,13 @@ export function NewStructureForm({
   let previewError = "";
   if (selectedTemplate && selectedBaseTemplate && anchorContractId) {
     try {
-      preview = previewLegs(selectedTemplate, selectedBaseTemplate, anchorContractId, instrumentContracts, direction);
+      preview = previewLegs(selectedTemplate, selectedBaseTemplate, anchorContractId, instrumentContracts, CANONICAL_DIRECTION);
     } catch (err) {
       previewError = err instanceof Error ? err.message : "Could not resolve template";
     }
   }
 
   const contractLabelById = useMemo(() => new Map(instrumentContracts.map((c) => [c.id, c.month_label])), [instrumentContracts]);
-
-  // The candidate's final OUTRIGHT exposure — independent of which base
-  // structure it'll actually trade through (that only affects HOW it's
-  // quoted, never the underlying risk), so this is the same decomposition
-  // InstrumentEngine/CorrelationEngine would derive from a created
-  // Structure-kind leg, computed here directly since nothing exists yet.
-  const candidateOutrightWeights = useMemo(() => {
-    if (isCustom) {
-      return customLegs.filter((l) => l.contract_id).map((l) => ({ contract_id: l.contract_id, ratio: l.ratio }));
-    }
-    if (!selectedTemplate || !anchorContractId) return [];
-    try {
-      return expandToOutrights(selectedTemplate, anchorContractId, instrumentContracts).map((d) => ({
-        contract_id: d.contract_id,
-        ratio: d.ratio * direction,
-      }));
-    } catch {
-      return [];
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isCustom, customLegs, selectedTemplate, anchorContractId, instrumentContracts, direction]);
 
   function nearExpiryHint(c: Contract): string | undefined {
     if (contractLifecycleStatus(c.expiry_date) !== "Near Expiry") return undefined;
@@ -131,20 +111,19 @@ export function NewStructureForm({
     if (nameEdited) return;
     const instrument = instruments.find((i) => i.id === instrumentId);
     if (!instrument) return;
-    const dirSuffix = direction === -1 ? " (Short)" : "";
     if (selectedTemplate) {
       const anchorLabel = contractLabelById.get(anchorContractId);
       setName(
         anchorLabel
-          ? `${instrument.symbol} ${anchorLabel} ${selectedTemplate.name}${dirSuffix}`
-          : `${instrument.symbol} ${selectedTemplate.name}${dirSuffix}`
+          ? `${instrument.symbol} ${anchorLabel} ${selectedTemplate.name}`
+          : `${instrument.symbol} ${selectedTemplate.name}`
       );
     } else {
       const labels = customLegs.map((l) => contractLabelById.get(l.contract_id)).filter((v): v is string => Boolean(v));
       setName(labels.length ? `${instrument.symbol} ${labels.join("-")} Custom` : `${instrument.symbol} Custom`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instrumentId, anchorContractId, selectedTemplate, customLegs, nameEdited, direction]);
+  }, [instrumentId, anchorContractId, selectedTemplate, customLegs, nameEdited]);
 
   function updateCustomLeg(idx: number, patch: Partial<CustomLegRow>) {
     setCustomLegs((prev) => prev.map((l, i) => (i === idx ? { ...l, ...patch } : l)));
@@ -170,7 +149,13 @@ export function NewStructureForm({
     try {
       const legs =
         selectedTemplate && selectedBaseTemplate
-          ? await StructureQuoteEngine.buildLegsForStructure(selectedTemplate, selectedBaseTemplate, anchorContractId, instrument, direction)
+          ? await StructureQuoteEngine.buildLegsForStructure(
+              selectedTemplate,
+              selectedBaseTemplate,
+              anchorContractId,
+              instrument,
+              CANONICAL_DIRECTION
+            )
           : customLegs.map((l) => ({ contract_id: l.contract_id, ratio: l.ratio }));
 
       await StructureEngine.createStructure({
@@ -184,7 +169,6 @@ export function NewStructureForm({
       setName("");
       setNameEdited(false);
       setAnchorContractId("");
-      setDirection(1);
       setCustomLegs([{ contract_id: "", ratio: 1 }]);
       onCreated();
     } catch (err) {
@@ -268,20 +252,6 @@ export function NewStructureForm({
           <input type="number" value={initialRisk} onChange={(e) => setInitialRisk(Number(e.target.value))} />
         </div>
 
-        {selectedTemplate && (
-          <div className="form-row">
-            <label>Direction</label>
-            <div className="segmented">
-              <button type="button" className={direction === 1 ? "active" : ""} onClick={() => setDirection(1)}>
-                Long
-              </button>
-              <button type="button" className={direction === -1 ? "active" : ""} onClick={() => setDirection(-1)}>
-                Short
-              </button>
-            </div>
-          </div>
-        )}
-
         {selectedTemplate ? (
           <>
             <div className="form-row">
@@ -358,14 +328,6 @@ export function NewStructureForm({
             <p className="helper-text">Ratio sign sets direction — no separate Long/Short field needed.</p>
           </>
         )}
-
-        <NewTradeCorrelationPreview
-          candidateWeights={candidateOutrightWeights}
-          snapshots={snapshots}
-          contracts={contracts}
-          templates={templates}
-          instruments={instruments}
-        />
 
         {error && <p className="helper-text" style={{ color: "var(--red)" }}>{error}</p>}
 

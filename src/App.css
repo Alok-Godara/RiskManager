@@ -465,7 +465,22 @@ button.secondary {
 }
 button.secondary:hover { background: var(--panel-hover); border-color: rgba(255, 255, 255, 0.16); }
 
+button.danger { background: var(--red-dim); color: var(--red); }
+button.danger:hover { background: var(--red); color: #fff; }
+
 .back-button { display: inline-flex; align-items: center; gap: 6px; }
+
+.icon-button {
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  padding: 2px;
+  margin: 0;
+  display: inline-flex;
+  vertical-align: middle;
+  border-radius: var(--radius-sm);
+}
+.icon-button:hover { background: var(--panel-hover); color: var(--text); }
 
 .leg-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .leg-row button { padding: 8px 11px; background: transparent; border: 1px solid var(--border); color: var(--text-faint); }
@@ -661,7 +676,7 @@ button.secondary:hover { background: var(--panel-hover); border-color: rgba(255,
 /* ---------------------------------------------------------------------- */
 .helper-text { font-size: 0.72rem; color: var(--text-faint); margin-top: 2px; }
 
-.inline-actions { display: flex; gap: 6px; }
+.inline-actions { display: flex; gap: 6px; align-items: center; }
 .inline-actions button {
   background: transparent;
   border: 1px solid var(--border);

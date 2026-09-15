@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Contract, CorrelationWindow, Instrument, PortfolioConcentrationAnalysis, StructureSnapshot, StructureTemplate } from "../types/domain";
+import type { Contract, CorrelationWindow, Instrument, PortfolioConcentrationAnalysis, StructureSnapshot, StructureTemplate, UUID } from "../types/domain";
 import { CORRELATION_WINDOWS } from "../types/domain";
-import { CorrelationEngine } from "../engines/CorrelationEngine";
-import { buildCorrelationContext, getCorrelationThresholds } from "../services/settlementData/correlationContext";
+import { CorrelationEngine, type DailySeriesPoint } from "../engines/CorrelationEngine";
+import { buildCorrelationContext, getCorrelationSettings, historyTradingDaysFor } from "../services/settlementData/correlationContext";
 
 /** Settlements publish once/day — this just picks up a newly-published one without a manual reload. */
 const REFRESH_INTERVAL_MS = 15 * 60 * 1000;
@@ -11,19 +11,23 @@ export interface PortfolioCorrelationState {
   loading: boolean;
   error?: string;
   analysesByWindow: Record<CorrelationWindow, PortfolioConcentrationAnalysis> | null;
+  /** Each open structure's daily value series — for computing a rolling trend (CorrelationEngine.rollingCorrelationTrend) per pair in the panel, without re-fetching. */
+  seriesByStructureId: Record<UUID, DailySeriesPoint[]>;
   thresholds: { correlation: number; concentration: number };
+  periods: Record<CorrelationWindow, number>;
+  rollingWindows: Record<CorrelationWindow, number>;
   openStructureCount: number;
   refresh: () => void;
 }
 
 /**
- * Drives the portfolio-wide correlation & concentration analysis (Structures
- * -> Portfolio Correlation & Concentration). Deliberately does NOT depend
- * on the raw `snapshots`/`contracts`/`templates`/`instruments` array
- * references in its effect — those get new references on every background
- * reload (the market-data poll), which would otherwise re-run the
- * settlement fetch/correlation computation every 30s for no reason (the
- * same unstable-reference pitfall found twice before in this codebase, see
+ * Drives the portfolio-wide correlation & concentration analysis (the
+ * top-level Correlation tab). Deliberately does NOT depend on the raw
+ * `snapshots`/`contracts`/`templates`/`instruments` array references in its
+ * effect — those get new references on every background reload (the
+ * market-data poll), which would otherwise re-run the settlement
+ * fetch/correlation computation every ~1.3s for no reason (the same
+ * unstable-reference pitfall found twice before in this codebase, see
  * NewStructureForm/InstrumentDashboard). Instead it depends on a small
  * signature of what actually matters here: which structures are open, their
  * risk, and their legs.
@@ -37,7 +41,10 @@ export function usePortfolioCorrelation(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>();
   const [analysesByWindow, setAnalysesByWindow] = useState<Record<CorrelationWindow, PortfolioConcentrationAnalysis> | null>(null);
+  const [seriesByStructureId, setSeriesByStructureId] = useState<Record<UUID, DailySeriesPoint[]>>({});
   const [thresholds, setThresholds] = useState({ correlation: 0.7, concentration: 0.65 });
+  const [periods, setPeriods] = useState<Record<CorrelationWindow, number>>({ 5: 5, 15: 15, 30: 30 });
+  const [rollingWindows, setRollingWindows] = useState<Record<CorrelationWindow, number>>({ 5: 5, 15: 5, 30: 7 });
   const [nonce, setNonce] = useState(0);
 
   const openStructures = useMemo(() => snapshots.filter((s) => s.structure.status !== "Fully Closed"), [snapshots]);
@@ -57,19 +64,33 @@ export function usePortfolioCorrelation(
       setLoading(true);
       setError(undefined);
       try {
-        const t = await getCorrelationThresholds();
+        const settings = await getCorrelationSettings();
         if (cancelled) return;
-        setThresholds(t);
+        setThresholds({ correlation: settings.correlation, concentration: settings.concentration });
+        setPeriods(settings.periods);
+        setRollingWindows(settings.rollingWindows);
 
         const withLegs = openStructures.map((s) => ({ structure: s.structure, legs: s.legs.map((l) => l.leg) }));
-        const context = await buildCorrelationContext(withLegs, contracts, templates, instruments);
+        const context = await buildCorrelationContext(withLegs, contracts, templates, instruments, historyTradingDaysFor(settings.periods));
         if (cancelled) return;
+
+        // Actual open lots per structure, not current_dollar_risk — see
+        // CorrelationEngine.structureExposureLots.
+        const exposureById = new Map(openStructures.map((s) => [s.structure.id, CorrelationEngine.structureExposureLots(s.legs)]));
 
         const byWindow = {} as Record<CorrelationWindow, PortfolioConcentrationAnalysis>;
         for (const window of CORRELATION_WINDOWS) {
-          byWindow[window] = CorrelationEngine.analyzePortfolioConcentration(context.openStructures, window, t.correlation, t.concentration);
+          byWindow[window] = CorrelationEngine.analyzePortfolioConcentration(
+            context.openStructures,
+            window,
+            settings.periods,
+            settings.correlation,
+            settings.concentration,
+            exposureById
+          );
         }
         setAnalysesByWindow(byWindow);
+        setSeriesByStructureId(Object.fromEntries(context.openStructures.map((s) => [s.structure.id, s.series])));
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to compute correlation analysis");
       } finally {
@@ -87,5 +108,15 @@ export function usePortfolioCorrelation(
     return () => window.clearInterval(id);
   }, []);
 
-  return { loading, error, analysesByWindow, thresholds, openStructureCount: openStructures.length, refresh: () => setNonce((n) => n + 1) };
+  return {
+    loading,
+    error,
+    analysesByWindow,
+    seriesByStructureId,
+    thresholds,
+    periods,
+    rollingWindows,
+    openStructureCount: openStructures.length,
+    refresh: () => setNonce((n) => n + 1),
+  };
 }

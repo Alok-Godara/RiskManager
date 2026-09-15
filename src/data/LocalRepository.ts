@@ -85,6 +85,18 @@ export class LocalRepository implements DataRepository {
   async upsertStructure(structure: Structure) {
     return putOne("structures", structure);
   }
+  async deleteStructure(id: UUID) {
+    const legs = await this.getLegsByStructure(id);
+    for (const leg of legs) {
+      await deleteWhere<Execution>("executions", (e) => e.structure_leg_id === leg.id);
+      await deleteOne("positions", leg.id);
+    }
+    await deleteWhere<StructureLeg>("structure_legs", (l) => l.structure_id === id);
+    await deleteWhere<RealizedPnLEvent>("realized_pnl_events", (r) => r.structure_id === id);
+    await deleteWhere<RiskAllocation>("risk_allocations", (r) => r.structure_id === id);
+    await deleteWhere<StopLossRecord>("stop_loss_history", (s) => s.structure_id === id);
+    await deleteOne("structures", id);
+  }
 
   // Legs
   async getLegsByStructure(structureId: UUID) {
@@ -203,6 +215,12 @@ export class LocalRepository implements DataRepository {
   }
   async upsertSettlementPrice(record: SettlementPrice) {
     return putOne("settlement_prices", record);
+  }
+  async upsertSettlementPrices(records: SettlementPrice[]) {
+    await Promise.all(records.map((r) => putOne("settlement_prices", r)));
+  }
+  async deleteSettlementPricesBefore(date: string) {
+    await deleteWhere<SettlementPrice>("settlement_prices", (s) => s.date < date);
   }
 
   // App Settings

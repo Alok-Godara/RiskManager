@@ -64,7 +64,15 @@ export class InstrumentEngine {
       const template = templatesById.get(contract.quote_template_id);
       if (!template) continue;
       try {
-        const decomposed = expandToOutrights(template, contract.anchor_contract_id, contracts);
+        // Outrights only: expandToOutrights walks N months forward from the
+        // anchor by array position in a chronologically-sorted list, and a
+        // "Structure"-kind contract (e.g. a Calendar Spread quote) shares
+        // its anchor's own expiry_date — mixed into an unfiltered list,
+        // that tie makes sort order (and therefore which contract offset N
+        // lands on) effectively arbitrary, silently resolving to another
+        // quote contract instead of the intended outright month (same fix
+        // as CorrelationEngine.legsToOutrightWeights).
+        const decomposed = expandToOutrights(template, contract.anchor_contract_id, outrightContracts);
         for (const o of decomposed) addExposure(o.contract_id, o.ratio * qty);
       } catch {
         // Anchor's contract window no longer covers this quote's span — skip rather than crash the dashboard.

@@ -49,13 +49,21 @@ export interface FetchOhlcOptions {
   interval?: string; // 1M / 5M / 1H / 1D
   count?: number; // candles per instrument
   extraFields?: string;
-  /** End timestamp, unix seconds — pins the request to "now" so we always get the freshest bar. */
+  /**
+   * End timestamp, unix milliseconds — pins the request to "now" so we
+   * always get the freshest bar. Confirmed live: passing seconds here makes
+   * the API silently return a stale candle (tens of minutes old) instead of
+   * erroring, so this unit is easy to get wrong without noticing.
+   */
   end?: number;
   signal?: AbortSignal;
 }
 
 /** Max instruments per request, per the API docs ("upto: 50"). */
 export const MAX_INSTRUMENTS_PER_REQUEST = 50;
+
+/** QuantHub's published rate limit for this token: 50 requests per minute. */
+export const QUANTHUB_RATE_LIMIT_PER_MINUTE = 50;
 
 const API_BASE = (import.meta.env?.VITE_QH_API_BASE ?? "/qh-api").replace(/\/+$/, "");
 

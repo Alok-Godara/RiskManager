@@ -33,8 +33,13 @@ export interface NewStructureInput {
 export interface NewEntryInput {
   structure_id: UUID;
   structure_leg_id: UUID;
-  quantity: number; // always positive; side is derived from the leg's ratio
+  quantity: number; // always positive
   price: number;
+  // This entry's own chosen direction (Long = 1, Short = -1) — combined
+  // with the leg's fixed template ratio sign to get execution.side. A
+  // structure has no direction of its own any more; every entry picks its
+  // own (spec: "a structure is simply a structure").
+  direction: 1 | -1;
   risk_allocated?: number;
   max_adverse_ticks?: number;
   notes?: string;
@@ -50,7 +55,12 @@ export interface ExitInput {
   price: number;
   execution_type?: "PartialExit" | "LegExit" | "FinalExit";
   notes?: string;
-  // Shared across every leg's Execution created by the same Exit submission.
+  // Which entry (its entry_group_id) this exit is closing — exits are
+  // entry-scoped now, never a generic "close whatever's oldest on this leg."
+  closes_entry_group_id: UUID;
+  // Shared across every leg's Execution created by the same Exit submission
+  // (distinct from closes_entry_group_id above — this is the EXIT's own
+  // batch id, not the entry being closed).
   entry_group_id: UUID;
 }
 
@@ -89,6 +99,13 @@ export class StructureEngine {
   private static async audit(event: Omit<AuditEvent, "id" | "timestamp">) {
     const full: AuditEvent = { ...event, id: uuid(), timestamp: new Date().toISOString() };
     await repository.addAuditEvent(full);
+  }
+
+  /** $ per 1 unit price move for a contract's instrument — same tick_value/tick_size conversion PnLEngine.unrealizedPnl uses, now also applied to realized P&L (see PositionEngine). Falls back to 1 (raw price difference) if the instrument can't be resolved, rather than throwing mid-recompute. */
+  private static async dollarPerPriceUnitForContract(contractId: UUID): Promise<number> {
+    const contract = await repository.getContract(contractId);
+    const instrument = contract ? await repository.getInstrument(contract.instrument_id) : undefined;
+    return instrument ? instrument.tick_value / instrument.tick_size : 1;
   }
 
   static async createStructure(input: NewStructureInput): Promise<Structure> {
@@ -131,6 +148,45 @@ export class StructureEngine {
     return structure;
   }
 
+  /** Rename a structure. A structure's shape/legs never change here — only its display name. */
+  static async renameStructure(structureId: UUID, newName: string): Promise<Structure> {
+    const structure = await repository.getStructure(structureId);
+    if (!structure) throw new Error("Structure not found");
+    const trimmed = newName.trim();
+    if (!trimmed) throw new Error("Name cannot be empty");
+    if (trimmed === structure.name) return structure;
+
+    const updated: Structure = { ...structure, name: trimmed };
+    await repository.upsertStructure(updated);
+    await this.audit({
+      event_type: "StructureModified",
+      structure_id: structureId,
+      description: `Renamed from "${structure.name}" to "${trimmed}"`,
+    });
+    return updated;
+  }
+
+  /**
+   * Permanently delete a structure and everything under it (legs,
+   * executions, positions, realized P&L, risk allocations, stop loss
+   * history) — irreversible, unlike exit/delete-execution which keep full
+   * history. The audit event is written BEFORE the delete so it's a real
+   * row the repository can point at; the structure's own audit trail is
+   * orphaned (structure_id cleared) rather than deleted, so "X was deleted"
+   * stays in the log.
+   */
+  static async deleteStructure(structureId: UUID): Promise<void> {
+    const structure = await repository.getStructure(structureId);
+    if (!structure) throw new Error("Structure not found");
+
+    await this.audit({
+      event_type: "StructureDeleted",
+      structure_id: structureId,
+      description: `Structure "${structure.name}" deleted`,
+    });
+    await repository.deleteStructure(structureId);
+  }
+
   /**
    * Fully recompute a leg's Position + Realized P&L events from its
    * `Active` execution history, then cascade structure-level risk and
@@ -141,7 +197,8 @@ export class StructureEngine {
   private static async recomputeLegFull(structureId: UUID, legId: UUID, contractId: UUID) {
     const allExecutions = await repository.getExecutionsByLeg(legId);
     const activeExecutions = allExecutions.filter((e) => e.status === "Active");
-    const { position, realizedFromExits } = PositionEngine.computePosition(legId, contractId, activeExecutions);
+    const dollarPerPriceUnit = await this.dollarPerPriceUnitForContract(contractId);
+    const { position, realizedFromExits } = PositionEngine.computePosition(legId, contractId, activeExecutions, dollarPerPriceUnit);
     await repository.upsertPosition(position);
 
     await repository.deleteRealizedPnLEventsByLeg(legId);
@@ -183,7 +240,7 @@ export class StructureEngine {
     return { position, realizedFromExits };
   }
 
-  /** Add an entry (initial or scale-in) to a specific leg. Direction is derived from the leg's ratio. */
+  /** Add an entry (initial or scale-in) to a specific leg. Side combines the leg's fixed template ratio with this entry's own chosen direction. */
   static async addEntry(input: NewEntryInput): Promise<Execution> {
     const leg = await repository.getLeg(input.structure_leg_id);
     if (!leg) throw new Error("Leg not found");
@@ -192,7 +249,7 @@ export class StructureEngine {
       id: uuid(),
       structure_leg_id: input.structure_leg_id,
       execution_type: "Entry",
-      side: sideFromRatio(leg.ratio),
+      side: sideFromRatio(leg.ratio * input.direction),
       quantity: input.quantity,
       price: input.price,
       risk_allocated: input.risk_allocated,
@@ -233,23 +290,29 @@ export class StructureEngine {
   }
 
   /**
-   * Exit some/all quantity on a leg. Handles partial exits, full leg
-   * exits, and (if it's the last active leg) final structure exit —
+   * Exit some/all quantity from ONE SPECIFIC ENTRY on a leg (never a
+   * generic "close whatever's oldest") — handles partial exits, full entry
+   * exits, and (if it's the last open exposure) final leg/structure exit —
    * WITHOUT ever creating a new unrelated trade (spec section 7). The
    * original structure persists; only its legs/status update.
    */
   static async exitLeg(input: ExitInput): Promise<Execution> {
     const leg = await repository.getLeg(input.structure_leg_id);
     if (!leg) throw new Error("Leg not found");
-    const priorPosition = await repository.getPositionByLeg(leg.id);
-    const netBefore = priorPosition?.net_quantity ?? 0;
-    if (netBefore === 0) throw new Error("No open position on this leg to exit");
+    const allExecutions = await repository.getExecutionsByLeg(leg.id);
+    const activeExecutions = allExecutions.filter((e) => e.status === "Active");
+    // Read-only lookup of this entry's own remaining exposure — the 1 here
+    // is a throwaway $ multiplier (we only need lotsByEntry, not realizedPnl,
+    // at this stage; the real conversion happens in recomputeLegFull below).
+    const { lotsByEntry } = PositionEngine.computePosition(leg.id, leg.contract_id, activeExecutions, 1);
+    const targetLot = lotsByEntry[input.closes_entry_group_id];
+    if (!targetLot || targetLot.quantity === 0) throw new Error("No open quantity on this entry to exit");
 
-    // An exit trades in the opposite direction of the current net position.
-    const exitSide = netBefore > 0 ? "Short" : "Long";
-    const closingQty = Math.min(input.quantity, Math.abs(netBefore));
+    // An exit trades in the opposite direction of the entry it's closing.
+    const exitSide = targetLot.quantity > 0 ? "Short" : "Long";
+    const closingQty = Math.min(input.quantity, Math.abs(targetLot.quantity));
 
-    const executionType = input.execution_type ?? (closingQty === Math.abs(netBefore) ? "LegExit" : "PartialExit");
+    const executionType = input.execution_type ?? (closingQty === Math.abs(targetLot.quantity) ? "LegExit" : "PartialExit");
 
     const execution: Execution = {
       id: uuid(),
@@ -261,6 +324,7 @@ export class StructureEngine {
       timestamp: new Date().toISOString(),
       notes: input.notes,
       entry_group_id: input.entry_group_id,
+      closes_entry_group_id: input.closes_entry_group_id,
       status: "Active",
     };
     await repository.addExecution(execution);
@@ -327,11 +391,24 @@ export class StructureEngine {
     const targetLeg = await repository.getLeg(targetLegId);
     if (!targetLeg) throw new Error("Target leg not found");
 
+    // Side is only ever recomputed when actually moving an Entry to a
+    // different leg (a "wrong contract" fix) — preserving that entry's own
+    // chosen direction relative to the leg's ratio, not resetting it to
+    // whatever the leg's raw ratio sign says (that would silently flip a
+    // Short entry back to Long on every unrelated price/qty correction).
+    // Exits and same-leg edits always keep the original side unchanged.
+    let side = original.side;
+    if (original.execution_type === "Entry" && targetLegId !== original.structure_leg_id) {
+      const originalLeg = await repository.getLeg(original.structure_leg_id);
+      const originalDirection = originalLeg && sideFromRatio(originalLeg.ratio) === original.side ? 1 : -1;
+      side = sideFromRatio(targetLeg.ratio * originalDirection);
+    }
+
     const replacement: Execution = {
       ...original,
       id: uuid(),
       structure_leg_id: targetLegId,
-      side: sideFromRatio(targetLeg.ratio),
+      side,
       quantity: input.quantity ?? original.quantity,
       price: input.price ?? original.price,
       risk_allocated: input.risk_allocated !== undefined ? input.risk_allocated : original.risk_allocated,

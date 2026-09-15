@@ -88,10 +88,11 @@ export interface MarketDataStatus {
 type Listener = () => void;
 
 /**
- * Backoff bounds for rate-limit cooldowns (see asRateLimitSignal). Measured
- * live against the real API: a burst of ~15 requests in a few seconds
- * triggers a 429, and recovery took over 90s of complete silence — so the
- * cap here is deliberately generous rather than tuned to guesswork.
+ * Backoff bounds for rate-limit cooldowns (see asRateLimitSignal). QuantHub
+ * allows 50 requests/minute per token (see QUANTHUB_RATE_LIMIT_PER_MINUTE);
+ * polling above that budget gets a 429, and live testing showed recovery
+ * can take over 90s of complete silence — so the cap here is deliberately
+ * generous rather than tuned to guesswork.
  */
 const MIN_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 90_000;

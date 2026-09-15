@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Contract, CorrelationWindow, Instrument, StructureSnapshot, StructureTemplate } from "../types/domain";
 import { CORRELATION_WINDOWS } from "../types/domain";
+import { CorrelationEngine } from "../engines/CorrelationEngine";
 import { usePortfolioCorrelation } from "../hooks/usePortfolioCorrelation";
 
 function correlationClass(c: number | undefined, threshold: number): string {
@@ -9,7 +10,25 @@ function correlationClass(c: number | undefined, threshold: number): string {
   return "";
 }
 
-export function PortfolioCorrelationPanel({
+/** Tiny dependency-free sparkline for a rolling-correlation trend — no charting library for ~30 points. */
+function Sparkline({ points }: { points: { correlation?: number }[] }) {
+  const w = 90;
+  const h = 22;
+  const defined = points.map((p, i) => ({ i, v: p.correlation })).filter((p): p is { i: number; v: number } => p.v !== undefined);
+  if (defined.length < 2) return <span className="muted">—</span>;
+  const x = (i: number) => (points.length <= 1 ? 0 : (i / (points.length - 1)) * w);
+  const y = (v: number) => h - ((v + 1) / 2) * h; // correlation -1..1 -> pixel space
+  const path = defined.map((p) => `${x(p.i)},${y(p.v)}`).join(" ");
+  const last = defined[defined.length - 1].v;
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-label="Rolling correlation trend">
+      <line x1={0} y1={h / 2} x2={w} y2={h / 2} stroke="var(--border)" strokeWidth={1} />
+      <polyline points={path} fill="none" stroke={last >= 0 ? "var(--red)" : "var(--green, #3ecf8e)"} strokeWidth={1.5} />
+    </svg>
+  );
+}
+
+export function CorrelationPanel({
   snapshots,
   contracts,
   templates,
@@ -21,19 +40,27 @@ export function PortfolioCorrelationPanel({
   instruments: Instrument[];
 }) {
   const [window, setWindow] = useState<CorrelationWindow>(15);
-  const { loading, error, analysesByWindow, thresholds, openStructureCount, refresh } = usePortfolioCorrelation(
-    snapshots,
-    contracts,
-    templates,
-    instruments
-  );
+  const { loading, error, analysesByWindow, seriesByStructureId, thresholds, periods, rollingWindows, openStructureCount, refresh } =
+    usePortfolioCorrelation(snapshots, contracts, templates, instruments);
 
   const analysis = analysesByWindow?.[window];
+
+  // Most-correlated pairs first, undefined last.
+  const sortedPairs = analysis
+    ? [...analysis.pairs].sort((a, b) => {
+        const ca = a.windows.find((w) => w.window === window)?.correlation;
+        const cb = b.windows.find((w) => w.window === window)?.correlation;
+        if (ca === undefined && cb === undefined) return 0;
+        if (ca === undefined) return 1;
+        if (cb === undefined) return -1;
+        return cb - ca;
+      })
+    : [];
 
   return (
     <div className="panel">
       <div className="panel-header">
-        <h2>Portfolio Correlation &amp; Concentration</h2>
+        <h2>Correlation &amp; Concentration</h2>
         <div className="button-row">
           <div className="segmented">
             {CORRELATION_WINDOWS.map((w) => (
@@ -47,6 +74,10 @@ export function PortfolioCorrelationPanel({
           </button>
         </div>
       </div>
+      <p className="helper-text">
+        {window}d column: period {periods[window]} trading day(s), rolling window {rollingWindows[window]} day(s) — configurable in
+        Settings → Correlation &amp; Concentration.
+      </p>
 
       {openStructureCount < 2 && !loading && (
         <p className="helper-text">Open at least 2 structures to see correlation analysis.</p>
@@ -69,7 +100,7 @@ export function PortfolioCorrelationPanel({
                 {analysis.sameDirectionRiskFraction !== undefined ? `${(analysis.sameDirectionRiskFraction * 100).toFixed(0)}%` : "—"}
               </div>
               <div className="stat-sub">
-                Risk-weighted fraction of pairwise exposure that's mutually reinforcing rather than offsetting. Warns at{" "}
+                Exposure-weighted (actual open lots, not dollar risk) fraction of pairwise correlation that's mutually reinforcing rather than offsetting. Warns at{" "}
                 {(thresholds.concentration * 100).toFixed(0)}%.
               </div>
             </div>
@@ -97,7 +128,7 @@ export function PortfolioCorrelationPanel({
             </div>
           )}
 
-          <h4>Pairwise Correlations ({window}d)</h4>
+          <h4>Pairwise Correlations ({window}d) — highest correlation first</h4>
           <table className="data-table compact">
             <thead>
               <tr>
@@ -106,26 +137,38 @@ export function PortfolioCorrelationPanel({
                 <th>5d</th>
                 <th>15d</th>
                 <th>30d</th>
+                <th>Trend ({window}d)</th>
               </tr>
             </thead>
             <tbody>
-              {analysis.pairs.map((p) => (
-                <tr key={`${p.structure_a_id}-${p.structure_b_id}`}>
-                  <td>{p.structure_a_name}</td>
-                  <td>{p.structure_b_name}</td>
-                  {CORRELATION_WINDOWS.map((w) => {
-                    const wc = p.windows.find((x) => x.window === w);
-                    return (
-                      <td key={w} className={correlationClass(wc?.correlation, thresholds.correlation)}>
-                        {wc?.correlation !== undefined ? wc.correlation.toFixed(2) : "—"}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-              {analysis.pairs.length === 0 && (
+              {sortedPairs.map((p) => {
+                const seriesA = seriesByStructureId[p.structure_a_id];
+                const seriesB = seriesByStructureId[p.structure_b_id];
+                const trend =
+                  seriesA && seriesB
+                    ? CorrelationEngine.rollingCorrelationTrend(seriesA, seriesB, periods[window], rollingWindows[window])
+                    : [];
+                return (
+                  <tr key={`${p.structure_a_id}-${p.structure_b_id}`}>
+                    <td>{p.structure_a_name}</td>
+                    <td>{p.structure_b_name}</td>
+                    {CORRELATION_WINDOWS.map((w) => {
+                      const wc = p.windows.find((x) => x.window === w);
+                      return (
+                        <td key={w} className={correlationClass(wc?.correlation, thresholds.correlation)}>
+                          {wc?.correlation !== undefined ? wc.correlation.toFixed(2) : "—"}
+                        </td>
+                      );
+                    })}
+                    <td>
+                      <Sparkline points={trend} />
+                    </td>
+                  </tr>
+                );
+              })}
+              {sortedPairs.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="muted">
+                  <td colSpan={6} className="muted">
                     No structure pairs to compare yet.
                   </td>
                 </tr>

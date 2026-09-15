@@ -10,6 +10,7 @@ interface FormState {
   name: string;
   symbol: string;
   exchange_code: string;
+  refdata_symbol: string;
   tick_size: number;
   tick_value: number;
   lot_size: number;
@@ -23,6 +24,7 @@ function blankForm(): FormState {
     name: "",
     symbol: "",
     exchange_code: "",
+    refdata_symbol: "",
     tick_size: 0.01,
     tick_value: 10,
     lot_size: 1000,
@@ -56,6 +58,7 @@ export function InstrumentSettings({
       name: inst.name,
       symbol: inst.symbol,
       exchange_code: inst.exchange_code ?? "",
+      refdata_symbol: inst.refdata_symbol ?? "",
       tick_size: inst.tick_size,
       tick_value: inst.tick_value,
       lot_size: inst.lot_size,
@@ -103,6 +106,7 @@ export function InstrumentSettings({
         name: form.name,
         symbol: form.symbol.toUpperCase(),
         exchange_code: form.exchange_code || undefined,
+        refdata_symbol: form.refdata_symbol || undefined,
         tick_size: form.tick_size,
         tick_value: form.tick_value,
         lot_size: form.lot_size,
@@ -135,6 +139,7 @@ export function InstrumentSettings({
         name: form.name,
         symbol: form.symbol.toUpperCase(),
         exchange_code: form.exchange_code || undefined,
+        refdata_symbol: form.refdata_symbol || undefined,
         tick_size: form.tick_size,
         tick_value: form.tick_value,
         lot_size: form.lot_size,
@@ -167,6 +172,19 @@ export function InstrumentSettings({
         <p className="helper-text">
           The product code live prices are requested under — combined with the futures month code, e.g.{" "}
           <code>CO</code> + Nov 2026 → <code>COX26</code>. Defaults to the symbol above when left blank.
+        </p>
+      </div>
+      <div className="form-row">
+        <label>Settlement API Product Symbol (optional)</label>
+        <input
+          value={form.refdata_symbol}
+          onChange={(e) => setForm({ ...form, refdata_symbol: e.target.value })}
+          placeholder="e.g. BRN for Brent"
+        />
+        <p className="helper-text">
+          The refdata settlement feed's own product symbol, from its <code>HGProductKey</code> field (e.g.{" "}
+          <code>ICE:BRN</code> → <code>BRN</code>) — a different convention than the QuantHub code above. Defaults to
+          the symbol above when left blank.
         </p>
       </div>
       <div className="leg-row">

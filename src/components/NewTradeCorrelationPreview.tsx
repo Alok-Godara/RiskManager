@@ -11,11 +11,13 @@ const VERDICT_CLASS: Record<string, string> = {
 };
 
 /**
- * "Before taking a new position, understand how it interacts with the
- * existing portfolio" — shown live in NewStructureForm once a candidate's
- * outright exposure (`candidateWeights`) is resolvable, against every
- * currently open structure. Renders nothing if there's no candidate yet or
- * no existing book to compare against.
+ * "Before taking this entry, understand how it interacts with the existing
+ * portfolio" — shown live in AddEntryModal once a candidate's outright
+ * exposure (`candidateWeights`, already scaled by this entry's own
+ * direction and lot size) is resolvable, against every OTHER currently open
+ * structure (`excludeStructureId` leaves the structure being entered out of
+ * its own comparison). Renders nothing if there's no candidate yet or no
+ * other open book to compare against.
  */
 export function NewTradeCorrelationPreview({
   candidateWeights,
@@ -23,25 +25,43 @@ export function NewTradeCorrelationPreview({
   contracts,
   templates,
   instruments,
+  excludeStructureId,
 }: {
   candidateWeights: { contract_id: UUID; ratio: number }[];
   snapshots: StructureSnapshot[];
   contracts: Contract[];
   templates: StructureTemplate[];
   instruments: Instrument[];
+  excludeStructureId?: UUID;
 }) {
   const [window, setWindow] = useState<CorrelationWindow>(15);
-  const { loading, error, analysesByWindow, thresholds } = useNewTradeCorrelation(candidateWeights, snapshots, contracts, templates, instruments);
+  const { loading, error, analysesByWindow, thresholds } = useNewTradeCorrelation(
+    candidateWeights,
+    snapshots,
+    contracts,
+    templates,
+    instruments,
+    excludeStructureId
+  );
 
-  const hasOpenBook = snapshots.some((s) => s.structure.status !== "Fully Closed");
+  const hasOpenBook = snapshots.some((s) => s.structure.status !== "Fully Closed" && s.structure.id !== excludeStructureId);
   if (candidateWeights.length === 0 || !hasOpenBook) return null;
 
   const analysis = analysesByWindow?.[window];
+  // Most-correlated existing positions first — |correlation| descending, undefined last.
+  const sortedPerStructure = analysis
+    ? [...analysis.perStructure].sort((a, b) => {
+        if (a.correlation === undefined && b.correlation === undefined) return 0;
+        if (a.correlation === undefined) return 1;
+        if (b.correlation === undefined) return -1;
+        return Math.abs(b.correlation) - Math.abs(a.correlation);
+      })
+    : [];
 
   return (
     <div className="form-row">
       <div className="panel-header" style={{ marginBottom: 8 }}>
-        <label style={{ margin: 0 }}>Portfolio Impact</label>
+        <label style={{ margin: 0 }}>This Entry vs. Your Portfolio</label>
         <div className="segmented">
           {CORRELATION_WINDOWS.map((w) => (
             <button key={w} type="button" className={window === w ? "active" : ""} onClick={() => setWindow(w)}>
@@ -57,7 +77,7 @@ export function NewTradeCorrelationPreview({
       {analysis && (
         <>
           <p className="helper-text">
-            Risk-weighted correlation vs. your open book at {window}d:{" "}
+            Exposure-weighted correlation vs. your open book at {window}d (weighted by actual open lots, not dollar risk):{" "}
             <span className={VERDICT_CLASS[analysis.verdict]}>
               {analysis.portfolioCorrelation !== undefined ? analysis.portfolioCorrelation.toFixed(2) : "—"}
             </span>{" "}
@@ -78,7 +98,7 @@ export function NewTradeCorrelationPreview({
               </tr>
             </thead>
             <tbody>
-              {analysis.perStructure.map((p) => (
+              {sortedPerStructure.map((p) => (
                 <tr key={p.structure_id}>
                   <td>{p.structure_name}</td>
                   <td className={p.correlation !== undefined && Math.abs(p.correlation) >= thresholds.correlation ? (p.correlation > 0 ? "pnl-neg" : "pnl-pos") : ""}>

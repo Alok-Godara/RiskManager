@@ -28,6 +28,7 @@ create table if not exists instruments (
   symbol text not null,
   name text not null,
   exchange_code text,
+  refdata_symbol text,
   tick_size double precision not null,
   tick_value double precision not null,
   lot_size double precision not null,
@@ -139,6 +140,10 @@ create table if not exists executions (
   -- (see engines/EntryEngine.ts). A correction's replacement row always
   -- carries the original's entry_group_id forward.
   entry_group_id uuid not null,
+  -- Set ONLY on an exit-type execution: which entry (its entry_group_id)
+  -- this exit is closing. Exits are entry-scoped, not FIFO across a leg's
+  -- whole history — see engines/PositionEngine.ts.
+  closes_entry_group_id uuid,
   status text not null default 'Active' check (status in ('Active', 'Edited', 'Deleted')),
   edited_from_execution_id uuid,
   edited_to_execution_id uuid,
@@ -272,7 +277,12 @@ create index if not exists settlement_prices_date_idx on settlement_prices(date)
 create table if not exists app_settings (
   id text primary key,
   correlation_warning_threshold double precision not null default 0.7,
-  concentration_risk_threshold double precision not null default 0.65
+  concentration_risk_threshold double precision not null default 0.65,
+  -- Per-label (5/15/30) trading-day lookback and rolling sub-window size —
+  -- see engines/CorrelationEngine.ts rollingCorrelationTrend. JSON objects
+  -- keyed by the label, e.g. {"5":5,"15":15,"30":30}.
+  correlation_periods jsonb,
+  correlation_rolling_windows jsonb
 );
 
 -- ============================================================================

@@ -72,7 +72,17 @@ export class CorrelationEngine {
       if (!contract.quote_template_id || !contract.anchor_contract_id) continue;
       const template = templatesById.get(contract.quote_template_id);
       if (!template) continue;
-      const instrumentContracts = instrumentContractsByInstrument.get(contract.instrument_id) ?? [];
+      // Outrights only: expandToOutrights walks N months forward from the
+      // anchor by array position in a chronologically-sorted list, and a
+      // "Structure"-kind contract (e.g. a Calendar Spread quote) shares its
+      // anchor's own expiry_date — mixed into an unfiltered list, that tie
+      // makes sort order (and therefore which contract offset N lands on)
+      // effectively arbitrary, silently resolving to another quote contract
+      // instead of the intended outright month. Same filter QuantHubProvider
+      // and templateExpansion.previewLegs already apply before this call.
+      const instrumentContracts = (instrumentContractsByInstrument.get(contract.instrument_id) ?? []).filter(
+        (c) => !c.kind || c.kind === "Outright"
+      );
       try {
         const decomposed = expandToOutrights(template, contract.anchor_contract_id, instrumentContracts);
         for (const d of decomposed) raw.push({ contract_id: d.contract_id, ratio: d.ratio * leg.ratio });
@@ -83,6 +93,23 @@ export class CorrelationEngine {
     const merged = new Map<UUID, number>();
     for (const w of raw) merged.set(w.contract_id, (merged.get(w.contract_id) ?? 0) + w.ratio);
     return Array.from(merged.entries()).map(([contract_id, ratio]) => ({ contract_id, ratio }));
+  }
+
+  /**
+   * A structure's current net open size, in "structure lots" — the anchor
+   * leg's (largest |ratio|, same convention EntryEngine uses per-entry)
+   * |net_quantity| / |ratio|. Used to weight how much a structure's
+   * correlation contributes to a portfolio-level read by its ACTUAL
+   * exposure, not by `current_dollar_risk` (a risk/stop-loss budget that
+   * can diverge from real position size — e.g. three small structures with
+   * a combined 10 lots vs. one 10-lot hedge shouldn't read as "1 structure
+   * vs. 3" if dollar risk happens to be allocated unevenly).
+   */
+  static structureExposureLots(legs: { leg: { ratio: number }; position: { net_quantity: number } }[]): number {
+    if (legs.length === 0) return 0;
+    const anchor = legs.reduce((a, b) => (Math.abs(b.leg.ratio) > Math.abs(a.leg.ratio) ? b : a));
+    const ratioAbs = Math.abs(anchor.leg.ratio);
+    return ratioAbs > 0 ? Math.abs(anchor.position.net_quantity) / ratioAbs : 0;
   }
 
   /** The outright Contract objects `legs` ultimately touch — what to fetch/ensure settlement history for. */
@@ -150,57 +177,114 @@ export class CorrelationEngine {
     return cov / Math.sqrt(varA * varB);
   }
 
-  /** Correlate two series' daily diffs over the most recent `windowDays` observations common to both (aligned by date). */
-  static rollingCorrelation(seriesA: DailySeriesPoint[], seriesB: DailySeriesPoint[], windowDays: number): WindowCorrelation {
+  /**
+   * Correlate two series' daily diffs over the most recent `actualDays`
+   * observations common to both (aligned by date) — the CURRENT snapshot
+   * (today's value), used for verdicts/warnings/thresholds. `label` is the
+   * 5d/15d/30d column this result is filed under for display; `actualDays`
+   * is the real day-count behind that label (Settings -> Correlation &
+   * Concentration lets it differ from the label, e.g. a "15d" column
+   * configured to actually use 20 days).
+   */
+  static rollingCorrelation(
+    seriesA: DailySeriesPoint[],
+    seriesB: DailySeriesPoint[],
+    actualDays: number,
+    label: CorrelationWindow
+  ): WindowCorrelation {
     const diffsA = this.seriesDiffs(seriesA);
     const diffsB = this.seriesDiffs(seriesB);
     const commonDates = Array.from(diffsA.keys())
       .filter((d) => diffsB.has(d))
       .sort()
-      .slice(-windowDays);
+      .slice(-actualDays);
     const a = commonDates.map((d) => diffsA.get(d)!);
     const b = commonDates.map((d) => diffsB.get(d)!);
     return {
-      window: windowDays as CorrelationWindow,
+      window: label,
       correlation: this.pearsonCorrelation(a, b),
       observations: commonDates.length,
     };
   }
 
-  /** Every configured window's correlation between two already-built series. */
-  static correlateAllWindows(seriesA: DailySeriesPoint[], seriesB: DailySeriesPoint[]): WindowCorrelation[] {
-    return CORRELATION_WINDOWS.map((w) => this.rollingCorrelation(seriesA, seriesB, w));
+  /**
+   * A TREND of correlation values, not one number: slides a `windowDays`
+   * sub-window of diffs one day at a time across the trailing `periodDays`
+   * of history, computing one Pearson correlation per position — e.g.
+   * period=30/window=7 -> correlation over days 1-7, then 2-8, ... 24-30
+   * (24 points), so a strengthening/fading relationship is visible instead
+   * of a single static snapshot. `windowDays` is clamped to what's actually
+   * available (>= 2, since Pearson needs at least 2 diffs, and <= the
+   * period's own diff count).
+   */
+  static rollingCorrelationTrend(
+    seriesA: DailySeriesPoint[],
+    seriesB: DailySeriesPoint[],
+    periodDays: number,
+    windowDays: number
+  ): { endDate: string; correlation?: number; observations: number }[] {
+    const diffsA = this.seriesDiffs(seriesA);
+    const diffsB = this.seriesDiffs(seriesB);
+    const commonDates = Array.from(diffsA.keys())
+      .filter((d) => diffsB.has(d))
+      .sort()
+      .slice(-periodDays);
+    if (commonDates.length < 2) return [];
+    const win = Math.max(2, Math.min(windowDays, commonDates.length));
+
+    const points: { endDate: string; correlation?: number; observations: number }[] = [];
+    for (let end = win; end <= commonDates.length; end++) {
+      const slice = commonDates.slice(end - win, end);
+      const a = slice.map((d) => diffsA.get(d)!);
+      const b = slice.map((d) => diffsB.get(d)!);
+      points.push({ endDate: slice[slice.length - 1], correlation: this.pearsonCorrelation(a, b), observations: slice.length });
+    }
+    return points;
+  }
+
+  /** Every configured window's CURRENT correlation between two already-built series, using each label's actual configured day-count. */
+  static correlateAllWindows(
+    seriesA: DailySeriesPoint[],
+    seriesB: DailySeriesPoint[],
+    windowConfig: Record<CorrelationWindow, number>
+  ): WindowCorrelation[] {
+    return CORRELATION_WINDOWS.map((label) => this.rollingCorrelation(seriesA, seriesB, windowConfig[label], label));
   }
 
   /**
    * How a not-yet-created candidate structure would interact with the
    * existing open book, excluding nothing else (the candidate isn't in
-   * `existing` since it hasn't been created). Risk-weighted by each
-   * existing structure's current_dollar_risk, so a large position's
-   * correlation matters more than a tiny one's.
+   * `existing` since it hasn't been created). Exposure-weighted by each
+   * existing structure's actual open lots (`exposureById`, from
+   * structureExposureLots — NOT current_dollar_risk, a risk/stop-loss
+   * budget that can diverge from real position size), so a large position's
+   * correlation matters more than a tiny one's, based on what's actually
+   * held rather than how much risk happens to be allocated to it.
    */
   static analyzeNewTrade(
     candidateSeries: DailySeriesPoint[],
     existing: { structure: Structure; series: DailySeriesPoint[] }[],
     window: CorrelationWindow,
-    warningThreshold: number
+    actualDays: number,
+    warningThreshold: number,
+    exposureById: Map<UUID, number>
   ): NewTradeCorrelationAnalysis {
     const perStructure = existing.map(({ structure, series }) => {
-      const wc = this.rollingCorrelation(candidateSeries, series, window);
+      const wc = this.rollingCorrelation(candidateSeries, series, actualDays, window);
       return {
         structure_id: structure.id,
         structure_name: structure.name,
         correlation: wc.correlation,
         observations: wc.observations,
-        risk: structure.current_dollar_risk,
+        exposure: exposureById.get(structure.id) ?? 0,
       };
     });
 
     const withCorrelation = perStructure.filter((p) => p.correlation !== undefined);
-    const totalRisk = withCorrelation.reduce((s, p) => s + Math.max(p.risk, 0), 0);
+    const totalExposure = withCorrelation.reduce((s, p) => s + Math.max(p.exposure, 0), 0);
     const portfolioCorrelation =
-      totalRisk > 0
-        ? withCorrelation.reduce((s, p) => s + p.correlation! * Math.max(p.risk, 0), 0) / totalRisk
+      totalExposure > 0
+        ? withCorrelation.reduce((s, p) => s + p.correlation! * Math.max(p.exposure, 0), 0) / totalExposure
         : withCorrelation.length > 0
           ? withCorrelation.reduce((s, p) => s + p.correlation!, 0) / withCorrelation.length
           : undefined;
@@ -240,13 +324,18 @@ export class CorrelationEngine {
    * together, behaving like one big directional bet rather than a
    * diversified book? Built purely from the pairwise correlation matrix
    * (no synthetic "market index" — see CorrelationEngine's file comment),
-   * risk-weighted so large positions dominate the read more than small
-   * ones:
+   * weighted by each structure's actual open exposure (`exposureById`, from
+   * structureExposureLots) so large POSITIONS dominate the read more than
+   * small ones — deliberately NOT current_dollar_risk (a stop-loss budget
+   * that can diverge from real position size, e.g. three small structures
+   * with a combined 10 lots vs. one 10-lot hedge shouldn't read as
+   * "1 structure vs. 3" just because dollar risk happens to be allocated
+   * unevenly):
    *
    *   sameDirectionRiskFraction =
-   *     sum over positively-correlated pairs of [correlation * min(risk_i, risk_j)]
+   *     sum over positively-correlated pairs of [correlation * min(exposure_i, exposure_j)]
    *     ─────────────────────────────────────────────────────────────────────
-   *     sum over ALL pairs of [min(risk_i, risk_j)]
+   *     sum over ALL pairs of [min(exposure_i, exposure_j)]
    *
    * A portfolio whose pairs are mostly strongly positively correlated
    * scores close to 1 (one-directional); one whose pairs offset (negative
@@ -255,8 +344,10 @@ export class CorrelationEngine {
   static analyzePortfolioConcentration(
     structuresWithSeries: { structure: Structure; series: DailySeriesPoint[] }[],
     window: CorrelationWindow,
+    windowConfig: Record<CorrelationWindow, number>,
     correlationWarningThreshold: number,
-    concentrationRiskThreshold: number
+    concentrationRiskThreshold: number,
+    exposureById: Map<UUID, number>
   ): PortfolioConcentrationAnalysis {
     const pairs: StructurePairCorrelation[] = [];
 
@@ -269,7 +360,7 @@ export class CorrelationEngine {
           structure_a_name: a.structure.name,
           structure_b_id: b.structure.id,
           structure_b_name: b.structure.name,
-          windows: this.correlateAllWindows(a.series, b.series),
+          windows: this.correlateAllWindows(a.series, b.series, windowConfig),
         });
       }
     }
@@ -280,7 +371,6 @@ export class CorrelationEngine {
       return c !== undefined && Math.abs(c) >= correlationWarningThreshold;
     });
 
-    const riskById = new Map(structuresWithSeries.map((s) => [s.structure.id, Math.max(s.structure.current_dollar_risk, 0)]));
     let weightedPositive = 0;
     let totalWeight = 0;
     const contributions: { pair: StructurePairCorrelation; contribution: number }[] = [];
@@ -288,7 +378,7 @@ export class CorrelationEngine {
     for (const pair of pairs) {
       const correlation = windowOf(pair)?.correlation;
       if (correlation === undefined) continue;
-      const weight = Math.min(riskById.get(pair.structure_a_id) ?? 0, riskById.get(pair.structure_b_id) ?? 0);
+      const weight = Math.min(exposureById.get(pair.structure_a_id) ?? 0, exposureById.get(pair.structure_b_id) ?? 0);
       if (weight <= 0) continue;
       totalWeight += weight;
       if (correlation > 0) {
@@ -310,7 +400,7 @@ export class CorrelationEngine {
     if (isConcentrated) {
       const names = drivingPairs.map((p) => `"${p.structure_a_name}" / "${p.structure_b_name}"`).join(", ");
       warnings.push(
-        `Portfolio is becoming one-directional: ${((sameDirectionRiskFraction ?? 0) * 100).toFixed(0)}% of risk-weighted pairwise exposure at ${window}d is mutually reinforcing rather than offsetting. Driven by: ${names}.`
+        `Portfolio is becoming one-directional: ${((sameDirectionRiskFraction ?? 0) * 100).toFixed(0)}% of exposure-weighted (lot-based, not dollar-risk) pairwise correlation at ${window}d is mutually reinforcing rather than offsetting. Driven by: ${names}.`
       );
     }
     for (const p of highCorrelationPairs) {

@@ -34,6 +34,38 @@ export class SupabaseRepository implements DataRepository {
     return supabase;
   }
 
+  /**
+   * PostgREST (Supabase's REST layer) caps a single response at 1000 rows
+   * by default — a query with no `.range()` silently gets ONLY the first
+   * 1000 rows, not an error. Every "get every row in this table" query used
+   * to fit under that easily; `settlement_prices` didn't once its history
+   * started covering every configured instrument (not just ones actually
+   * traded — see correlationContext.ts), and the resulting silent
+   * truncation broke correlation for structures whose settlement rows
+   * happened to fall past row 1000. This pages through with `.range()`
+   * until a page comes back short, so it can never happen again — here or
+   * for any other table that grows past 1000 rows over time.
+   */
+  private async fetchAllPages<T>(
+    // Supabase's query builder is thenable (awaitable) but not a real
+    // Promise instance — PromiseLike accepts that without requiring
+    // catch/finally/Symbol.toStringTag.
+    pageFetch: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>
+  ): Promise<T[]> {
+    const PAGE_SIZE = 1000;
+    const all: T[] = [];
+    let from = 0;
+    for (;;) {
+      const { data, error } = await pageFetch(from, from + PAGE_SIZE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+    return all;
+  }
+
   // Instruments
   async getInstruments() {
     const { data, error } = await this.db().from("instruments").select("*").order("name");
@@ -63,9 +95,7 @@ export class SupabaseRepository implements DataRepository {
 
   // Contracts
   async getContracts() {
-    const { data, error } = await this.db().from("contracts").select("*");
-    if (error) throw error;
-    return (data ?? []) as Contract[];
+    return this.fetchAllPages<Contract>((from, to) => this.db().from("contracts").select("*").range(from, to));
   }
   async getContractsByInstrument(instrumentId: UUID) {
     const { data, error } = await this.db().from("contracts").select("*").eq("instrument_id", instrumentId);
@@ -104,9 +134,7 @@ export class SupabaseRepository implements DataRepository {
 
   // Structures
   async getStructures() {
-    const { data, error } = await this.db().from("structures").select("*");
-    if (error) throw error;
-    return (data ?? []) as Structure[];
+    return this.fetchAllPages<Structure>((from, to) => this.db().from("structures").select("*").range(from, to));
   }
   async getStructure(id: UUID) {
     const { data, error } = await this.db().from("structures").select("*").eq("id", id).maybeSingle();
@@ -117,6 +145,15 @@ export class SupabaseRepository implements DataRepository {
     const { error } = await this.db().from("structures").upsert(structure, { onConflict: "id" });
     if (error) throw error;
   }
+  async deleteStructure(id: UUID) {
+    // Schema has ON DELETE CASCADE from structure_legs/realized_pnl_events/
+    // risk_allocations/stop_loss_history to structures(id), and from
+    // executions/positions to structure_legs(id) — one delete here removes
+    // every dependent row. audit_events.structure_id is ON DELETE SET NULL,
+    // so the audit trail survives.
+    const { error } = await this.db().from("structures").delete().eq("id", id);
+    if (error) throw error;
+  }
 
   // Structure Legs
   async getLegsByStructure(structureId: UUID) {
@@ -125,9 +162,7 @@ export class SupabaseRepository implements DataRepository {
     return (data ?? []) as StructureLeg[];
   }
   async getAllLegs() {
-    const { data, error } = await this.db().from("structure_legs").select("*");
-    if (error) throw error;
-    return (data ?? []) as StructureLeg[];
+    return this.fetchAllPages<StructureLeg>((from, to) => this.db().from("structure_legs").select("*").range(from, to));
   }
   async getLeg(id: UUID) {
     const { data, error } = await this.db().from("structure_legs").select("*").eq("id", id).maybeSingle();
@@ -151,9 +186,7 @@ export class SupabaseRepository implements DataRepository {
     return (data ?? []) as Execution[];
   }
   async getAllExecutions() {
-    const { data, error } = await this.db().from("executions").select("*");
-    if (error) throw error;
-    return (data ?? []) as Execution[];
+    return this.fetchAllPages<Execution>((from, to) => this.db().from("executions").select("*").range(from, to));
   }
   async addExecution(execution: Execution) {
     const { error } = await this.db().from("executions").upsert(execution, { onConflict: "id" });
@@ -162,9 +195,7 @@ export class SupabaseRepository implements DataRepository {
 
   // Positions (keyed by structure_leg_id, not id)
   async getPositions() {
-    const { data, error } = await this.db().from("positions").select("*");
-    if (error) throw error;
-    return (data ?? []) as Position[];
+    return this.fetchAllPages<Position>((from, to) => this.db().from("positions").select("*").range(from, to));
   }
   async getPositionByLeg(legId: UUID) {
     const { data, error } = await this.db().from("positions").select("*").eq("structure_leg_id", legId).maybeSingle();
@@ -178,9 +209,7 @@ export class SupabaseRepository implements DataRepository {
 
   // Market Prices (keyed by contract_id)
   async getMarketPrices() {
-    const { data, error } = await this.db().from("market_prices").select("*");
-    if (error) throw error;
-    return (data ?? []) as MarketPrice[];
+    return this.fetchAllPages<MarketPrice>((from, to) => this.db().from("market_prices").select("*").range(from, to));
   }
   async getMarketPrice(contractId: UUID) {
     const { data, error } = await this.db().from("market_prices").select("*").eq("contract_id", contractId).maybeSingle();
@@ -194,9 +223,7 @@ export class SupabaseRepository implements DataRepository {
 
   // Realized P&L Events
   async getRealizedPnLEvents() {
-    const { data, error } = await this.db().from("realized_pnl_events").select("*");
-    if (error) throw error;
-    return (data ?? []) as RealizedPnLEvent[];
+    return this.fetchAllPages<RealizedPnLEvent>((from, to) => this.db().from("realized_pnl_events").select("*").range(from, to));
   }
   async getRealizedPnLEventsByLeg(legId: UUID) {
     const { data, error } = await this.db().from("realized_pnl_events").select("*").eq("structure_leg_id", legId);
@@ -214,9 +241,7 @@ export class SupabaseRepository implements DataRepository {
 
   // Risk Allocations
   async getRiskAllocations() {
-    const { data, error } = await this.db().from("risk_allocations").select("*");
-    if (error) throw error;
-    return (data ?? []) as RiskAllocation[];
+    return this.fetchAllPages<RiskAllocation>((from, to) => this.db().from("risk_allocations").select("*").range(from, to));
   }
   async getRiskAllocationsByStructure(structureId: UUID) {
     const { data, error } = await this.db().from("risk_allocations").select("*").eq("structure_id", structureId);
@@ -249,9 +274,9 @@ export class SupabaseRepository implements DataRepository {
 
   // Audit Log
   async getAuditEvents() {
-    const { data, error } = await this.db().from("audit_events").select("*").order("timestamp", { ascending: false });
-    if (error) throw error;
-    return (data ?? []) as AuditEvent[];
+    return this.fetchAllPages<AuditEvent>((from, to) =>
+      this.db().from("audit_events").select("*").order("timestamp", { ascending: false }).range(from, to)
+    );
   }
   async addAuditEvent(event: AuditEvent) {
     const { error } = await this.db().from("audit_events").upsert(event, { onConflict: "id" });
@@ -272,12 +297,21 @@ export class SupabaseRepository implements DataRepository {
   // Settlement Prices
   async getSettlementPricesByContracts(contractIds: UUID[]) {
     if (contractIds.length === 0) return [];
-    const { data, error } = await this.db().from("settlement_prices").select("*").in("contract_id", contractIds);
-    if (error) throw error;
-    return (data ?? []) as SettlementPrice[];
+    return this.fetchAllPages<SettlementPrice>((from, to) =>
+      this.db().from("settlement_prices").select("*").in("contract_id", contractIds).range(from, to)
+    );
   }
   async upsertSettlementPrice(record: SettlementPrice) {
     const { error } = await this.db().from("settlement_prices").upsert(record, { onConflict: "id" });
+    if (error) throw error;
+  }
+  async upsertSettlementPrices(records: SettlementPrice[]) {
+    if (records.length === 0) return;
+    const { error } = await this.db().from("settlement_prices").upsert(records, { onConflict: "id" });
+    if (error) throw error;
+  }
+  async deleteSettlementPricesBefore(date: string) {
+    const { error } = await this.db().from("settlement_prices").delete().lt("date", date);
     if (error) throw error;
   }
 
@@ -314,9 +348,7 @@ export class SupabaseRepository implements DataRepository {
   async exportAll() {
     const result: Record<string, unknown> = {};
     for (const table of this.TABLES) {
-      const { data, error } = await this.db().from(table).select("*");
-      if (error) throw error;
-      result[table] = data ?? [];
+      result[table] = await this.fetchAllPages<unknown>((from, to) => this.db().from(table).select("*").range(from, to));
     }
     return result;
   }

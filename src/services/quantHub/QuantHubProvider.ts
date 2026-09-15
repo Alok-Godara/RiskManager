@@ -74,9 +74,13 @@ function isOutright(contract: Contract): boolean {
  *     these as one tradeable product, so the price is requested directly —
  *     never synthesized by summing outright legs (see buildCompositeCode).
  *
- * Each request is pinned with `end=<now, unix seconds>` and `count=1`, so
- * the single row returned is always the freshest bar; its close is the
- * current price (spec: "take the top OHLC row, use its close").
+ * Each request asks for `count=1` and omits `end` — confirmed live that
+ * QuantHub then returns just the single freshest bar, same as an unbounded
+ * request's top row; its close is the current price (spec: "take the top
+ * OHLC row, use its close"). `end` is deliberately not sent: it must be
+ * unix milliseconds, but the API doesn't reject the wrong unit (seconds) —
+ * it silently answers with a stale candle instead, which is a sharp edge
+ * not worth taking on when omitting it entirely works.
  */
 export class QuantHubProvider implements MarketDataProvider {
   name = "QuantHub";
@@ -136,11 +140,10 @@ export class QuantHubProvider implements MarketDataProvider {
     const codes = Array.from(contractIdsByCode.keys());
     if (codes.length === 0) return {};
 
-    const endSeconds = Math.floor(Date.now() / 1000);
     // One request per 50 codes, in parallel. A failed batch shouldn't sink
     // the others, but a wholesale failure (auth/network) must surface.
     const batches = await Promise.allSettled(
-      chunk(codes, MAX_INSTRUMENTS_PER_REQUEST).map((batch) => fetchOhlc(batch, { count: 1, end: endSeconds }))
+      chunk(codes, MAX_INSTRUMENTS_PER_REQUEST).map((batch) => fetchOhlc(batch, { count: 1 }))
     );
 
     const closeByCode: Record<string, { price: number; asOf?: number }> = {};

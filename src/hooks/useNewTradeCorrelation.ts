@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Contract, CorrelationWindow, Instrument, NewTradeCorrelationAnalysis, StructureSnapshot, StructureTemplate, UUID } from "../types/domain";
 import { CORRELATION_WINDOWS } from "../types/domain";
 import { CorrelationEngine } from "../engines/CorrelationEngine";
-import { buildCandidateSeries, buildCorrelationContext, getCorrelationThresholds } from "../services/settlementData/correlationContext";
+import { buildCandidateSeries, buildCorrelationContext, getCorrelationSettings, historyTradingDaysFor } from "../services/settlementData/correlationContext";
 
 export interface NewTradeCorrelationState {
   loading: boolean;
@@ -12,26 +12,32 @@ export interface NewTradeCorrelationState {
 }
 
 /**
- * Live "how would this candidate structure interact with my existing book"
- * preview, driven from NewStructureForm before the user submits. Same
- * unstable-reference caution as usePortfolioCorrelation: depends on string
- * signatures of the candidate legs and the open-structure book, not the raw
- * array/prop references (which get new identities on every background
- * reload).
+ * Live "how would this candidate interact with my existing book" preview —
+ * driven from AddEntryModal (a specific entry being taken on an existing
+ * structure) before the user submits. `excludeStructureId` leaves that same
+ * structure's OTHER entries out of the comparison (a new entry never
+ * correlates against itself). Same unstable-reference caution as
+ * usePortfolioCorrelation: depends on string signatures of the candidate
+ * legs and the open-structure book, not the raw array/prop references
+ * (which get new identities on every background reload).
  */
 export function useNewTradeCorrelation(
   candidateWeights: { contract_id: UUID; ratio: number }[],
   snapshots: StructureSnapshot[],
   contracts: Contract[],
   templates: StructureTemplate[],
-  instruments: Instrument[]
+  instruments: Instrument[],
+  excludeStructureId?: UUID
 ): NewTradeCorrelationState {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [analysesByWindow, setAnalysesByWindow] = useState<Record<CorrelationWindow, NewTradeCorrelationAnalysis> | null>(null);
   const [thresholds, setThresholds] = useState({ correlation: 0.7, concentration: 0.65 });
 
-  const openStructures = useMemo(() => snapshots.filter((s) => s.structure.status !== "Fully Closed"), [snapshots]);
+  const openStructures = useMemo(
+    () => snapshots.filter((s) => s.structure.status !== "Fully Closed" && s.structure.id !== excludeStructureId),
+    [snapshots, excludeStructureId]
+  );
   const structureSignature = useMemo(
     () =>
       openStructures
@@ -52,18 +58,35 @@ export function useNewTradeCorrelation(
       setLoading(true);
       setError(undefined);
       try {
-        const t = await getCorrelationThresholds();
+        const settings = await getCorrelationSettings();
         if (cancelled) return;
-        setThresholds(t);
+        setThresholds({ correlation: settings.correlation, concentration: settings.concentration });
 
         const withLegs = openStructures.map((s) => ({ structure: s.structure, legs: s.legs.map((l) => l.leg) }));
-        const context = await buildCorrelationContext(withLegs, contracts, templates, instruments, candidateWeights);
+        const context = await buildCorrelationContext(
+          withLegs,
+          contracts,
+          templates,
+          instruments,
+          historyTradingDaysFor(settings.periods),
+          candidateWeights
+        );
         if (cancelled) return;
 
         const candidateSeries = buildCandidateSeries(context, candidateWeights);
+        // Actual open lots per existing structure, not current_dollar_risk —
+        // see CorrelationEngine.structureExposureLots.
+        const exposureById = new Map(openStructures.map((s) => [s.structure.id, CorrelationEngine.structureExposureLots(s.legs)]));
         const byWindow = {} as Record<CorrelationWindow, NewTradeCorrelationAnalysis>;
         for (const window of CORRELATION_WINDOWS) {
-          byWindow[window] = CorrelationEngine.analyzeNewTrade(candidateSeries, context.openStructures, window, t.correlation);
+          byWindow[window] = CorrelationEngine.analyzeNewTrade(
+            candidateSeries,
+            context.openStructures,
+            window,
+            settings.periods[window],
+            settings.correlation,
+            exposureById
+          );
         }
         setAnalysesByWindow(byWindow);
       } catch (err) {

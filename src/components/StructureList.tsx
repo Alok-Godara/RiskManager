@@ -1,19 +1,12 @@
-import type { Contract, Instrument, StructureSnapshot, StructureTemplate } from "../types/domain";
+import type { StructureSnapshot } from "../types/domain";
 import { fmtMoney, pnlClass } from "../utils/format";
-import { PortfolioCorrelationPanel } from "./PortfolioCorrelationPanel";
 
 export function StructureList({
   snapshots,
-  contracts,
-  templates,
-  instruments,
   onSelect,
   onNewStructure,
 }: {
   snapshots: StructureSnapshot[];
-  contracts: Contract[];
-  templates: StructureTemplate[];
-  instruments: Instrument[];
   onSelect: (id: string) => void;
   onNewStructure: () => void;
 }) {
@@ -21,8 +14,6 @@ export function StructureList({
 
   return (
     <>
-      <PortfolioCorrelationPanel snapshots={snapshots} contracts={contracts} templates={templates} instruments={instruments} />
-
       <div className="panel">
         <div className="panel-header">
           <h2>Structures</h2>

@@ -7,17 +7,19 @@ import { InstrumentDashboard } from "./components/InstrumentDashboard";
 import { StructureList } from "./components/StructureList";
 import { NewStructureForm } from "./components/NewStructureForm";
 import { StructureDetail } from "./components/StructureDetail";
+import { CorrelationPanel } from "./components/CorrelationPanel";
 import { AuditLog } from "./components/AuditLog";
 import { Settings } from "./components/Settings";
 import { isCloudConfigured } from "./data";
 import { fmtMoney, pnlClass } from "./utils/format";
-import { IconGrid, IconLayers, IconStructure, IconClock, IconCloud, IconDisk, IconSettings } from "./components/icons";
+import { IconGrid, IconLayers, IconStructure, IconClock, IconCloud, IconDisk, IconSettings, IconTrend } from "./components/icons";
 
-type Tab = "dashboard" | "structures" | "positions" | "history" | "settings";
+type Tab = "dashboard" | "structures" | "correlation" | "positions" | "history" | "settings";
 
 const NAV: { id: Tab; label: string; icon: (props: { size?: number }) => ReactElement }[] = [
   { id: "dashboard", label: "Dashboard", icon: IconGrid },
   { id: "structures", label: "Structures", icon: IconStructure },
+  { id: "correlation", label: "Correlation", icon: IconTrend },
   { id: "positions", label: "Positions", icon: IconLayers },
   { id: "history", label: "History", icon: IconClock },
   { id: "settings", label: "Settings", icon: IconSettings },
@@ -26,6 +28,7 @@ const NAV: { id: Tab; label: string; icon: (props: { size?: number }) => ReactEl
 const TAB_TITLES: Record<Tab, string> = {
   dashboard: "Portfolio Dashboard",
   structures: "Structures",
+  correlation: "Correlation & Concentration",
   positions: "Instrument Net Positions",
   history: "History & Audit Trail",
   settings: "Settings",
@@ -146,7 +149,6 @@ function App() {
               instruments={activeInstruments}
               contracts={contracts}
               templates={activeTemplates}
-              snapshots={snapshots}
               onCreated={() => {
                 reload();
                 setCreatingStructure(false);
@@ -156,22 +158,23 @@ function App() {
           )}
 
           {tab === "structures" && !selectedSnapshot && !creatingStructure && (
-            <StructureList
-              snapshots={snapshots}
-              contracts={contracts}
-              templates={templates}
-              instruments={instruments}
-              onSelect={setSelectedStructureId}
-              onNewStructure={() => setCreatingStructure(true)}
-            />
+            <StructureList snapshots={snapshots} onSelect={setSelectedStructureId} onNewStructure={() => setCreatingStructure(true)} />
           )}
 
           {tab === "structures" && selectedSnapshot && (
             <StructureDetail
               snapshot={selectedSnapshot}
+              snapshots={snapshots}
+              contracts={contracts}
+              templates={templates}
+              instruments={instruments}
               onBack={() => setSelectedStructureId(null)}
               onChanged={reload}
             />
+          )}
+
+          {tab === "correlation" && (
+            <CorrelationPanel snapshots={snapshots} contracts={contracts} templates={templates} instruments={instruments} />
           )}
 
           {tab === "history" && <AuditLog events={auditEvents} />}

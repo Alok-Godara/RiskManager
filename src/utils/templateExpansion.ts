@@ -27,9 +27,20 @@ export function contractAtOffset(chronological: Contract[], anchorId: UUID, offs
  * (InstrumentEngine) to decompose a structure-level quote (e.g. "Jan26
  * Fly") back to its outright months, and NOT for pricing/P&L, which track
  * whatever level was actually traded (spec V4/V5).
+ *
+ * Filters `allContracts` down to outrights before sorting/walking offsets,
+ * regardless of what the caller passes — a "Structure"-kind contract (e.g.
+ * a Calendar Spread quote) shares its anchor's own expiry_date, so mixed
+ * into the list, that tie makes chronological sort order (and therefore
+ * which contract an offset lands on) effectively arbitrary, silently
+ * resolving to another quote contract instead of the intended outright
+ * month. This exact bug hit two different call sites (CorrelationEngine,
+ * InstrumentEngine) before both pre-filtered defensively; filtering here
+ * too means a future caller can't reintroduce it by forgetting to.
  */
 export function expandToOutrights(template: StructureTemplate, anchorContractId: UUID, allContracts: Contract[]): OutrightLeg[] {
-  const chronological = sortContractsChronologically(allContracts);
+  const outrightsOnly = allContracts.filter((c) => !c.kind || c.kind === "Outright");
+  const chronological = sortContractsChronologically(outrightsOnly);
   return template.legs.map((leg) => {
     const contract = contractAtOffset(chronological, anchorContractId, leg.month_offset);
     return { contract_id: contract.id, ratio: leg.ratio };

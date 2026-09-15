@@ -27,6 +27,7 @@ export type AuditEventType =
   | "SpreadClosed"
   | "LegClosed"
   | "StructureModified"
+  | "StructureDeleted"
   | "StopLossModified"
   | "RiskModified"
   | "RealizedProfitBooked"
@@ -46,6 +47,11 @@ export interface Instrument {
   symbol: string; // e.g. "BZ", "CL", "WBS"
   name: string; // e.g. "Brent Crude"
   exchange_code?: string; // exchange/API symbol if different from `symbol`
+  // The settlement/refdata API's product symbol for this instrument, if it
+  // doesn't match `symbol` — e.g. HGProductKey "ICE:BRN" -> "BRN" (see
+  // services/settlementData/client.ts). Defaults to `symbol` when unset,
+  // same pattern as `exchange_code` for QuantHub.
+  refdata_symbol?: string;
   tick_size: number;
   tick_value: number; // $ value per tick per lot
   lot_size: number; // barrels/units per lot
@@ -181,6 +187,11 @@ export interface Execution {
   // engines/EntryEngine.ts. An edit's replacement row always carries the
   // original's entry_group_id forward.
   entry_group_id: UUID;
+  // Set ONLY on an exit-type execution: which entry (its entry_group_id)
+  // this exit is closing. Exits are entry-scoped, not FIFO across a leg's
+  // whole history — see engines/PositionEngine.ts. Undefined for Entry-type
+  // executions.
+  closes_entry_group_id?: UUID;
 
   status: ExecutionStatus;
   edited_from_execution_id?: UUID; // set on the replacement row
@@ -308,6 +319,15 @@ export interface AppSettings {
   id: UUID; // always "default"
   correlation_warning_threshold: number; // 0..1 — pairwise |correlation| that triggers a warning
   concentration_risk_threshold: number; // 0..1 — risk-weighted same-direction fraction that triggers a warning
+  // Trading-day lookback per label, e.g. { 5: 5, 15: 15, 30: 30 } by default
+  // — how far back settlement history is fetched/considered for that column.
+  correlation_periods: Record<CorrelationWindow, number>;
+  // Sub-window size per label used for the ROLLING correlation trend within
+  // its period (see engines/CorrelationEngine.ts rollingCorrelationTrend) —
+  // e.g. period=30/window=7 computes a 7-day correlation, slid one day at a
+  // time across the trailing 30 days, producing a trend rather than one
+  // number. Clamped to <= that label's period.
+  correlation_rolling_windows: Record<CorrelationWindow, number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,10 +360,15 @@ export interface EntrySnapshot {
   entry_group_id: UUID;
   structure_id: UUID;
   timestamp: string;
-  structure_lots: number; // implied by qty = |ratio| * structure_lots on each leg
+  structure_lots: number; // ORIGINAL size implied by qty = |ratio| * structure_lots on each leg
+  side: LegSide; // this entry's own chosen direction — see StructureEngine.addEntry's `direction` input
   avg_price: number; // composite structure price for this entry: sum(ratio_i * price_i)
   risk_allocated: number;
-  unrealized_pnl: number;
+  open_quantity: number; // structure lots still open (structure_lots minus whatever's been exited from THIS entry)
+  closed_quantity: number; // structure lots exited from this entry specifically (entry-scoped, not FIFO — see PositionEngine)
+  avg_exit_price?: number; // composite exit price, qty-weighted across this entry's own exits; undefined until closed_quantity > 0
+  unrealized_pnl: number; // based on open_quantity only
+  realized_pnl: number; // sum of RealizedPnLEvent rows from exits that closed this entry, in $ (see PositionEngine's tick-value conversion)
   // Composite price level (same sum(ratio_i * price_i) convention as avg_price)
   // at which this entry's loss would equal risk_allocated. Undefined if no
   // risk was allocated to this entry.

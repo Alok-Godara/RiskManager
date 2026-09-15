@@ -51,6 +51,10 @@ export interface DataRepository {
   getStructures(): Promise<Structure[]>;
   getStructure(id: UUID): Promise<Structure | undefined>;
   upsertStructure(structure: Structure): Promise<void>;
+  // Deletes the structure and every dependent row (legs, executions,
+  // positions, realized P&L events, risk allocations, stop loss history) —
+  // irreversible. Audit events referencing this structure are kept.
+  deleteStructure(id: UUID): Promise<void>;
 
   // Structure Legs
   getLegsByStructure(structureId: UUID): Promise<StructureLeg[]>;
@@ -106,6 +110,10 @@ export interface DataRepository {
   // overwrites in place rather than duplicating.
   getSettlementPricesByContracts(contractIds: UUID[]): Promise<SettlementPrice[]>;
   upsertSettlementPrice(record: SettlementPrice): Promise<void>;
+  /** Same as upsertSettlementPrice but one round trip for the whole batch — use this when writing more than a couple of records. */
+  upsertSettlementPrices(records: SettlementPrice[]): Promise<void>;
+  /** Deletes every settlement row older than `date` (YYYY-MM-DD), across all contracts — keeps the table bounded to the rolling window correlation actually needs instead of growing forever. */
+  deleteSettlementPricesBefore(date: string): Promise<void>;
 
   // App Settings (single row, id "default")
   getAppSettings(): Promise<AppSettings | undefined>;

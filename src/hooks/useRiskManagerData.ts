@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { repository } from "../data";
+import { repository, isCloudConfigured } from "../data";
 import { seedIfEmpty } from "../data/seed";
 import { runMigrations } from "../data/migrate";
 import { MarketDataService } from "../services/MarketDataService";
 import { QuantHubProvider } from "../services/quantHub/QuantHubProvider";
+import { QUANTHUB_RATE_LIMIT_PER_MINUTE } from "../services/quantHub/client";
 import { PnLEngine } from "../engines/PnLEngine";
 import { PortfolioEngine } from "../engines/PortfolioEngine";
 import type {
@@ -59,24 +60,26 @@ export function useRiskManagerData() {
       if (__QH_CONFIGURED__) MarketDataService.setProvider(new QuantHubProvider());
 
       // Start continuous market data polling for exactly the contracts
-      // required by currently open positions (spec section 3). Each
-      // QuantHub request is pinned to `end=now`, so polling picks up the
-      // 1-minute candle updating in real time rather than waiting a full
-      // minute between prices.
+      // required by currently open positions (spec section 3).
       //
-      // 30s per request. Comfortably under the ~15-request burst limit
-      // observed in live testing (2 req/min vs. that threshold), so this
-      // cadence shouldn't trigger the rate-limit backoff in normal use —
-      // MarketDataService still handles it gracefully (pausing and
-      // resuming on its own) if it ever does. See Settings -> API
-      // Configuration / the sidebar tooltip for feed health at any time.
+      // QuantHub allows 50 requests/minute per token. Each poll tick is one
+      // OHLC request in the common case — all required contracts fit in a
+      // single batch of <= MAX_INSTRUMENTS_PER_REQUEST (50) — so we poll as
+      // close to that budget as is safe rather than an arbitrary cadence:
+      // 60s / 50 requests = 1200ms at the ceiling; add a small margin for
+      // jitter (double-invoked effects, clock drift) rather than sitting
+      // exactly on the limit. This is also why the earlier 1s cadence
+      // (60 req/min) got rate-limited — it was over budget, not "bursty".
+      // MarketDataService still backs off gracefully if a 429 slips through
+      // anyway. See Settings -> API Configuration for feed health.
+      const quantHubPollMs = Math.ceil(60_000 / QUANTHUB_RATE_LIMIT_PER_MINUTE) + 100;
       MarketDataService.start(async () => {
         const legs = await repository.getAllLegs();
         const activeLegs = legs.filter((l) => l.is_active);
         const contractIds = new Set(activeLegs.map((l) => l.contract_id));
         const allContracts = await repository.getContracts();
         return allContracts.filter((c) => contractIds.has(c.id));
-      }, __QH_CONFIGURED__ ? 30000 : 4000);
+      }, __QH_CONFIGURED__ ? quantHubPollMs : 4000);
 
       unsub = MarketDataService.onUpdate(() => {
         reload();
@@ -87,6 +90,29 @@ export function useRiskManagerData() {
       MarketDataService.stop();
       if (unsub) unsub();
     };
+  }, [reload]);
+
+  // Cloud-only, independent of MarketDataService's own success: a client
+  // that can't reach QuantHub at all (e.g. off the corp network — see
+  // vite.config.ts's proxy, which needs a route to qh-api.corp...) never
+  // gets a `MarketDataService.onUpdate` notification, since that only fires
+  // after a successful QuantHub fetch. Without this, such a client's prices
+  // would sit frozen at whatever was loaded on first page load forever, even
+  // though a DIFFERENT client that CAN reach QuantHub (e.g. an always-on
+  // office machine) keeps writing fresh prices into Supabase's
+  // `market_prices` table on every one of ITS successful polls already
+  // (MarketDataService.refresh -> repository.upsertMarketPrice, no
+  // throttling needed there — more frequent shared writes only help). This
+  // just re-reads whatever's currently in Supabase every 60s regardless, so
+  // a QuantHub-unreachable client still tracks what an always-on reachable
+  // one is publishing. 60s is plenty for a risk dashboard and cheap even
+  // when redundant with a working local QuantHub feed.
+  useEffect(() => {
+    if (!isCloudConfigured) return;
+    const id = window.setInterval(() => {
+      reload();
+    }, 60_000);
+    return () => window.clearInterval(id);
   }, [reload]);
 
   const activeInstruments = instruments.filter((i) => i.is_active);

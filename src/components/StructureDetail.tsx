@@ -1,22 +1,31 @@
 import { useEffect, useState } from "react";
-import type { StructureSnapshot, Execution, EntrySnapshot } from "../types/domain";
+import type { Contract, Execution, EntrySnapshot, Instrument, StructureSnapshot, StructureTemplate } from "../types/domain";
 import { RiskEngine } from "../engines/RiskEngine";
 import { EntryEngine } from "../engines/EntryEngine";
+import { StructureEngine } from "../engines/StructureEngine";
 import { contractLifecycleStatus } from "../utils/contractExpiry";
 import { repository } from "../data";
 import { fmtMoney, fmtPrice, pnlClass } from "../utils/format";
-import { IconChevronLeft } from "./icons";
+import { IconChevronLeft, IconPencil } from "./icons";
 import { AddEntryModal } from "./AddEntryModal";
-import { ExitModal } from "./ExitModal";
+import { ExitEntryModal } from "./ExitEntryModal";
 import { EditEntryModal } from "./EditEntryModal";
 import { EditExecutionModal } from "./EditExecutionModal";
 
 export function StructureDetail({
   snapshot,
+  snapshots,
+  contracts,
+  templates,
+  instruments,
   onBack,
   onChanged,
 }: {
   snapshot: StructureSnapshot;
+  snapshots: StructureSnapshot[];
+  contracts: Contract[];
+  templates: StructureTemplate[];
+  instruments: Instrument[];
   onBack: () => void;
   onChanged: () => void;
 }) {
@@ -26,9 +35,14 @@ export function StructureDetail({
   const [entries, setEntries] = useState<EntrySnapshot[]>([]);
   const [otherExecutions, setOtherExecutions] = useState<Execution[]>([]);
   const [showAddEntry, setShowAddEntry] = useState(false);
-  const [showExit, setShowExit] = useState(false);
+  const [exitingEntry, setExitingEntry] = useState<EntrySnapshot | null>(null);
   const [editingEntry, setEditingEntry] = useState<EntrySnapshot | null>(null);
   const [editingExecution, setEditingExecution] = useState<Execution | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState(structure.name);
+  const [renameError, setRenameError] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   useEffect(() => {
     RiskEngine.totalAllocatedRisk(structure.id).then(setAllocatedRisk);
@@ -44,11 +58,59 @@ export function StructureDetail({
     });
   }, [structure.id, snapshot, legs]);
 
+  useEffect(() => {
+    setNameDraft(structure.name);
+  }, [structure.name]);
+
   const contractLabelByLeg = Object.fromEntries(legs.map((l) => [l.leg.id, l.contract.month_label]));
-  const hasOpenLegs = legs.some((l) => l.leg.is_active && l.position.net_quantity !== 0);
+
+  // Structure-level average entry price across every entry, not just per-leg:
+  // sum(ratio_i * leg_i avg price) — the same composite-price convention used
+  // everywhere else (EntryEngine's per-entry avg_price, QuantHub structure
+  // quotes, CorrelationEngine). Each leg's own average_price is already the
+  // size-weighted average across all of that leg's entries (Position is
+  // cumulative), so this reduce alone gives the structure's overall average
+  // without re-deriving anything from raw executions.
+  const structureAvgPrice = legs.reduce((sum, l) => sum + l.leg.ratio * l.position.average_price, 0);
 
   function handleChanged() {
     onChanged();
+  }
+
+  async function handleRenameSave() {
+    setRenameError("");
+    const trimmed = nameDraft.trim();
+    if (!trimmed) {
+      setRenameError("Name cannot be empty.");
+      return;
+    }
+    try {
+      await StructureEngine.renameStructure(structure.id, trimmed);
+      setRenaming(false);
+      onChanged();
+    } catch (err) {
+      setRenameError(err instanceof Error ? err.message : "Failed to rename");
+    }
+  }
+
+  async function handleDelete() {
+    if (
+      !window.confirm(
+        `Delete structure "${structure.name}"? This permanently removes all its legs, entries/exits, and realized P&L. This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    setDeleteError("");
+    setDeleting(true);
+    try {
+      await StructureEngine.deleteStructure(structure.id);
+      onChanged();
+      onBack();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Failed to delete");
+      setDeleting(false);
+    }
   }
 
   return (
@@ -57,17 +119,57 @@ export function StructureDetail({
         <IconChevronLeft size={14} /> Back to structures
       </button>
       <div className="panel-header">
-        <h2>
-          {structure.name}{" "}
-          <span className={`badge badge-${structure.status.replace(/\s/g, "").toLowerCase()}`}>{structure.status}</span>
-        </h2>
+        {renaming ? (
+          <div className="inline-actions">
+            <input
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleRenameSave();
+                if (e.key === "Escape") {
+                  setRenaming(false);
+                  setNameDraft(structure.name);
+                  setRenameError("");
+                }
+              }}
+              autoFocus
+              style={{ fontSize: "1.1em" }}
+            />
+            <button type="button" onClick={handleRenameSave}>
+              Save
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                setRenaming(false);
+                setNameDraft(structure.name);
+                setRenameError("");
+              }}
+            >
+              Cancel
+            </button>
+            <button type="button" className="danger" onClick={handleDelete} disabled={deleting}>
+              {deleting ? "Deleting…" : "Delete"}
+            </button>
+          </div>
+        ) : (
+          <div className="inline-actions">
+            <h2>
+              {structure.name}{" "}
+              <span className={`badge badge-${structure.status.replace(/\s/g, "").toLowerCase()}`}>{structure.status}</span>
+            </h2>
+            <button type="button" className="icon-button" onClick={() => setRenaming(true)} title="Edit structure" aria-label="Edit structure">
+              <IconPencil size={14} />
+            </button>
+          </div>
+        )}
         <div className="button-row">
           <button onClick={() => setShowAddEntry(true)}>+ Add Entry</button>
-          <button className="secondary" style={{ marginBottom: 0 }} onClick={() => setShowExit(true)} disabled={!hasOpenLegs}>
-            Exit / Reduce
-          </button>
         </div>
       </div>
+      {renameError && <p className="helper-text" style={{ color: "var(--red)" }}>{renameError}</p>}
+      {deleteError && <p className="helper-text" style={{ color: "var(--red)" }}>{deleteError}</p>}
 
       <div className="card-grid">
         <div className="stat-card">
@@ -81,6 +183,11 @@ export function StructureDetail({
         <div className="stat-card">
           <div className="stat-label">Total P&amp;L</div>
           <div className={`stat-value ${pnlClass(snapshot.total_pnl)}`}>{fmtMoney(snapshot.total_pnl)}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Structure Avg Entry Price</div>
+          <div className="stat-value">{fmtPrice(structureAvgPrice)}</div>
+          <div className="stat-sub">Composite across all entries — Σ(ratio × leg avg price), not just per-leg</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Initial Risk / SL</div>
@@ -144,10 +251,15 @@ export function StructureDetail({
         <thead>
           <tr>
             <th>Date &amp; Time</th>
+            <th>Side</th>
             <th>Avg Entry Price</th>
+            <th>Open Qty</th>
+            <th>Closed Qty</th>
+            <th>Avg Exit Price</th>
             <th>Risk Allocated</th>
             <th>Stop Loss (Price)</th>
             <th>Unrealized P&amp;L</th>
+            <th>Realized P&amp;L</th>
             <th></th>
           </tr>
         </thead>
@@ -155,14 +267,22 @@ export function StructureDetail({
           {entries.map((en) => (
             <tr key={en.entry_group_id}>
               <td>{new Date(en.timestamp).toLocaleString()}</td>
+              <td className={en.side === "Long" ? "pnl-pos" : "pnl-neg"}>{en.side}</td>
               <td>{fmtPrice(en.avg_price)}</td>
+              <td>{en.open_quantity}</td>
+              <td>{en.closed_quantity}</td>
+              <td>{en.avg_exit_price !== undefined ? fmtPrice(en.avg_exit_price) : "—"}</td>
               <td>{en.risk_allocated ? fmtMoney(en.risk_allocated) : "—"}</td>
               <td>{en.stop_loss_price !== undefined ? fmtPrice(en.stop_loss_price) : "—"}</td>
               <td className={pnlClass(en.unrealized_pnl)}>{fmtMoney(en.unrealized_pnl)}</td>
+              <td className={pnlClass(en.realized_pnl)}>{fmtMoney(en.realized_pnl)}</td>
               <td>
                 <div className="inline-actions">
                   <button type="button" onClick={() => setEditingEntry(en)}>
                     Edit
+                  </button>
+                  <button type="button" onClick={() => setExitingEntry(en)} disabled={en.open_quantity <= 0}>
+                    Exit
                   </button>
                 </div>
               </td>
@@ -170,7 +290,7 @@ export function StructureDetail({
           ))}
           {entries.length === 0 && (
             <tr>
-              <td colSpan={6} className="muted">
+              <td colSpan={11} className="muted">
                 No entries yet — click Add Entry above.
               </td>
             </tr>
@@ -221,9 +341,25 @@ export function StructureDetail({
       )}
 
       {showAddEntry && (
-        <AddEntryModal snapshot={snapshot} onClose={() => setShowAddEntry(false)} onSaved={handleChanged} />
+        <AddEntryModal
+          snapshot={snapshot}
+          snapshots={snapshots}
+          contracts={contracts}
+          templates={templates}
+          instruments={instruments}
+          onClose={() => setShowAddEntry(false)}
+          onSaved={handleChanged}
+        />
       )}
-      {showExit && <ExitModal snapshot={snapshot} onClose={() => setShowExit(false)} onSaved={handleChanged} />}
+      {exitingEntry && (
+        <ExitEntryModal
+          entry={exitingEntry}
+          structureId={structure.id}
+          legSnapshots={legs}
+          onClose={() => setExitingEntry(null)}
+          onSaved={handleChanged}
+        />
+      )}
       {editingEntry && (
         <EditEntryModal
           entry={editingEntry}
