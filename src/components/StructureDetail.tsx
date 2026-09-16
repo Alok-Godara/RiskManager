@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import type { Contract, Execution, EntrySnapshot, Instrument, StructureSnapshot, StructureTemplate } from "../types/domain";
-import { RiskEngine } from "../engines/RiskEngine";
 import { EntryEngine } from "../engines/EntryEngine";
 import { StructureEngine } from "../engines/StructureEngine";
 import { contractLifecycleStatus } from "../utils/contractExpiry";
@@ -31,7 +30,6 @@ export function StructureDetail({
 }) {
   const { structure, legs } = snapshot;
 
-  const [allocatedRisk, setAllocatedRisk] = useState(0);
   const [entries, setEntries] = useState<EntrySnapshot[]>([]);
   const [otherExecutions, setOtherExecutions] = useState<Execution[]>([]);
   const [showAddEntry, setShowAddEntry] = useState(false);
@@ -43,9 +41,12 @@ export function StructureDetail({
   const [renameError, setRenameError] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const [editingRisk, setEditingRisk] = useState(false);
+  const [riskDraft, setRiskDraft] = useState<number | "">(structure.initial_dollar_risk);
+  const [riskError, setRiskError] = useState("");
+  const [savingRisk, setSavingRisk] = useState(false);
 
   useEffect(() => {
-    RiskEngine.totalAllocatedRisk(structure.id).then(setAllocatedRisk);
     EntryEngine.buildEntrySnapshots(snapshot).then(setEntries);
     Promise.all(legs.map((l) => repository.getExecutionsByLeg(l.leg.id))).then((lists) => {
       // Entry-type executions get their own aggregated "Entries" table above
@@ -62,7 +63,25 @@ export function StructureDetail({
     setNameDraft(structure.name);
   }, [structure.name]);
 
+  useEffect(() => {
+    setRiskDraft(structure.initial_dollar_risk);
+  }, [structure.initial_dollar_risk]);
+
   const contractLabelByLeg = Object.fromEntries(legs.map((l) => [l.leg.id, l.contract.month_label]));
+
+  // Active Risk: risk_allocated summed only across entries still OPEN right
+  // now (open_quantity > 0) — a fully-exited entry no longer ties up any of
+  // the structure's risk budget, so it must drop out of this total. Fed
+  // straight from the same EntrySnapshot rows the Entries table already
+  // renders, not a separate query, so it can never disagree with what's on
+  // screen.
+  const activeRisk = entries.filter((e) => e.open_quantity > 0).reduce((sum, e) => sum + (e.risk_allocated || 0), 0);
+
+  // Unallocated Risk: the initial budget, minus what's currently tied up in
+  // open entries, plus profit already booked (a loss reduces it the same
+  // way) — the maximum you could still allocate to a new/scaled-up entry on
+  // this structure right now.
+  const unallocatedRisk = structure.initial_dollar_risk - activeRisk + snapshot.total_realized_pnl;
 
   // Structure-level average entry price across every entry, not just per-leg:
   // sum(ratio_i * leg_i avg price) — the same composite-price convention used
@@ -90,6 +109,24 @@ export function StructureDetail({
       onChanged();
     } catch (err) {
       setRenameError(err instanceof Error ? err.message : "Failed to rename");
+    }
+  }
+
+  async function handleRiskSave() {
+    setRiskError("");
+    if (riskDraft === "" || riskDraft < 0) {
+      setRiskError("Initial risk must be zero or greater.");
+      return;
+    }
+    setSavingRisk(true);
+    try {
+      await StructureEngine.updateInitialRisk(structure.id, Number(riskDraft));
+      setEditingRisk(false);
+      onChanged();
+    } catch (err) {
+      setRiskError(err instanceof Error ? err.message : "Failed to update risk");
+    } finally {
+      setSavingRisk(false);
     }
   }
 
@@ -190,16 +227,73 @@ export function StructureDetail({
           <div className="stat-sub">Composite across all entries — Σ(ratio × leg avg price), not just per-leg</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Initial Risk / SL</div>
-          <div className="stat-value">{fmtMoney(structure.initial_dollar_risk)}</div>
+          <div className="stat-label">
+            Initial Risk{" "}
+            {!editingRisk && (
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => {
+                  setRiskDraft(structure.initial_dollar_risk);
+                  setRiskError("");
+                  setEditingRisk(true);
+                }}
+                title="Edit initial risk"
+                aria-label="Edit initial risk"
+              >
+                <IconPencil size={12} />
+              </button>
+            )}
+          </div>
+          {editingRisk ? (
+            <div className="inline-actions">
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={riskDraft}
+                onChange={(e) => setRiskDraft(e.target.value === "" ? "" : Number(e.target.value))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleRiskSave();
+                  if (e.key === "Escape") {
+                    setEditingRisk(false);
+                    setRiskDraft(structure.initial_dollar_risk);
+                    setRiskError("");
+                  }
+                }}
+                autoFocus
+                style={{ width: 100 }}
+              />
+              <button type="button" onClick={handleRiskSave} disabled={savingRisk}>
+                {savingRisk ? "Saving…" : "Save"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  setEditingRisk(false);
+                  setRiskDraft(structure.initial_dollar_risk);
+                  setRiskError("");
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <div className="stat-value">{fmtMoney(structure.initial_dollar_risk)}</div>
+          )}
+          <div className="stat-sub">The risk budget you're willing to give this structure — editable any time.</div>
+          {riskError && <div className="helper-text" style={{ color: "var(--red)" }}>{riskError}</div>}
         </div>
         <div className="stat-card">
-          <div className="stat-label">Adjusted Current Risk / SL</div>
-          <div className="stat-value">{fmtMoney(structure.current_dollar_risk)}</div>
+          <div className="stat-label">Active Risk</div>
+          <div className="stat-value">{fmtMoney(activeRisk)}</div>
+          <div className="stat-sub">Sum of risk allocated to entries still open right now</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Entry-Level Risk Allocated</div>
-          <div className="stat-value">{fmtMoney(allocatedRisk)}</div>
+          <div className="stat-label">Unallocated Risk</div>
+          <div className={`stat-value ${pnlClass(unallocatedRisk)}`}>{fmtMoney(unallocatedRisk)}</div>
+          <div className="stat-sub">Initial Risk − Active Risk + Realized P&amp;L — what's free to allocate to a new or bigger entry</div>
         </div>
       </div>
 

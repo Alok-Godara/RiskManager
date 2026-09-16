@@ -3,7 +3,7 @@ import { repository } from "../../data";
 import { contractAtOffset } from "../../utils/templateExpansion";
 import { sortContractsChronologically } from "../../utils/contractGen";
 import type { MarketDataProvider, PriceQuote } from "../MarketDataService";
-import { fetchOhlc, latestCandle, MAX_INSTRUMENTS_PER_REQUEST, QuantHubError } from "./client";
+import { fetchOhlc, latestCandle, MAX_INSTRUMENTS_PER_REQUEST, QUANTHUB_MIN_REQUEST_SPACING_MS, QuantHubError, type OhlcCandle } from "./client";
 import { buildCompositeQuantHubCode, quantHubProductCode, toQuantHubCode } from "./symbols";
 
 /**
@@ -140,11 +140,23 @@ export class QuantHubProvider implements MarketDataProvider {
     const codes = Array.from(contractIdsByCode.keys());
     if (codes.length === 0) return {};
 
-    // One request per 50 codes, in parallel. A failed batch shouldn't sink
-    // the others, but a wholesale failure (auth/network) must surface.
-    const batches = await Promise.allSettled(
-      chunk(codes, MAX_INSTRUMENTS_PER_REQUEST).map((batch) => fetchOhlc(batch, { count: 1 }))
-    );
+    // One request per 50 codes, SEQUENTIALLY and spaced at least
+    // QUANTHUB_MIN_REQUEST_SPACING_MS apart — the ~10 req/min budget on the
+    // new /apis/ohlc/ endpoint leaves no room for firing multiple batches at
+    // once the way the old (50 req/min) endpoint could. In the common case
+    // of <=50 required contracts this is exactly one request, same as
+    // before. A failed batch shouldn't sink the others, but a wholesale
+    // failure (auth/network) must surface.
+    const codeBatches = chunk(codes, MAX_INSTRUMENTS_PER_REQUEST);
+    const batches: PromiseSettledResult<Record<string, OhlcCandle[]>>[] = [];
+    for (let i = 0; i < codeBatches.length; i++) {
+      if (i > 0) await new Promise((resolve) => setTimeout(resolve, QUANTHUB_MIN_REQUEST_SPACING_MS));
+      try {
+        batches.push({ status: "fulfilled", value: await fetchOhlc(codeBatches[i], { count: 1 }) });
+      } catch (err) {
+        batches.push({ status: "rejected", reason: err });
+      }
+    }
 
     const closeByCode: Record<string, { price: number; asOf?: number }> = {};
     let firstError: unknown;

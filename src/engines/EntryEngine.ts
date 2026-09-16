@@ -123,9 +123,15 @@ export class EntryEngine {
       }, 0);
 
       // Stop-loss level is fixed at entry time against the ORIGINAL entry
-      // size, not scaled down as it's partially exited.
+      // size, not scaled down as it's partially exited. Direction matters:
+      // a Long entry loses money as price falls, so its stop sits BELOW
+      // avgPrice; a Short entry loses money as price rises, so its stop
+      // sits ABOVE avgPrice. Previously this always subtracted, silently
+      // assuming every entry was Long.
       const slope = dollarPerPriceUnit * structureLots; // $ per 1 unit move in the composite price
-      const stopLossPrice = riskAllocated > 0 && slope > 0 ? avgPrice - riskAllocated / slope : undefined;
+      const riskPriceDistance = slope > 0 ? riskAllocated / slope : 0;
+      const stopLossPrice =
+        riskAllocated > 0 && slope > 0 ? (side === "Long" ? avgPrice - riskPriceDistance : avgPrice + riskPriceDistance) : undefined;
 
       results.push({
         entry_group_id: entryGroupId,

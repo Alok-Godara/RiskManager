@@ -17,6 +17,10 @@ export interface PortfolioCorrelationState {
   periods: Record<CorrelationWindow, number>;
   rollingWindows: Record<CorrelationWindow, number>;
   openStructureCount: number;
+  /** Net (signed) lots per outright contract, aggregated across every open structure — see CorrelationEngine.netExposureByContract. */
+  netExposureByContract: Record<UUID, number>;
+  /** Contracts touched by any open structure, including ones that net to exactly zero (fully hedged). */
+  touchedContractIds: UUID[];
   refresh: () => void;
 }
 
@@ -45,14 +49,25 @@ export function usePortfolioCorrelation(
   const [thresholds, setThresholds] = useState({ correlation: 0.7, concentration: 0.65 });
   const [periods, setPeriods] = useState<Record<CorrelationWindow, number>>({ 5: 5, 15: 15, 30: 30 });
   const [rollingWindows, setRollingWindows] = useState<Record<CorrelationWindow, number>>({ 5: 5, 15: 5, 30: 7 });
+  const [netExposureByContract, setNetExposureByContract] = useState<Record<UUID, number>>({});
+  const [touchedContractIds, setTouchedContractIds] = useState<UUID[]>([]);
   const [nonce, setNonce] = useState(0);
 
   const openStructures = useMemo(() => snapshots.filter((s) => s.structure.status !== "Fully Closed"), [snapshots]);
 
+  // Includes each leg's CURRENT net_quantity, not just its fixed contract_id
+  // — position size/direction changes (a new entry, a partial exit) must
+  // re-trigger the correlation recompute below even though the structure's
+  // own id/legs/dollar-risk haven't changed.
   const structureSignature = useMemo(
     () =>
       openStructures
-        .map((s) => `${s.structure.id}:${s.structure.current_dollar_risk}:${s.legs.map((l) => `${l.leg.contract_id}=${l.leg.ratio}`).join(",")}`)
+        .map(
+          (s) =>
+            `${s.structure.id}:${s.structure.current_dollar_risk}:${s.legs
+              .map((l) => `${l.leg.contract_id}=${l.position.net_quantity}`)
+              .join(",")}`
+        )
         .sort()
         .join("|"),
     [openStructures]
@@ -70,7 +85,16 @@ export function usePortfolioCorrelation(
         setPeriods(settings.periods);
         setRollingWindows(settings.rollingWindows);
 
-        const withLegs = openStructures.map((s) => ({ structure: s.structure, legs: s.legs.map((l) => l.leg) }));
+        // Weight each leg by its ACTUAL signed open quantity, not the
+        // structure's fixed template ratio — see CorrelationEngine's file
+        // comment. This is what makes two opposite-direction positions in
+        // the same shape correctly read as hedging (negative correlation)
+        // instead of concentrating (positive) just because their template
+        // shapes move together.
+        const withLegs = openStructures.map((s) => ({
+          structure: s.structure,
+          legs: s.legs.map((l) => ({ contract_id: l.leg.contract_id, ratio: l.position.net_quantity })),
+        }));
         const context = await buildCorrelationContext(withLegs, contracts, templates, instruments, historyTradingDaysFor(settings.periods));
         if (cancelled) return;
 
@@ -91,6 +115,8 @@ export function usePortfolioCorrelation(
         }
         setAnalysesByWindow(byWindow);
         setSeriesByStructureId(Object.fromEntries(context.openStructures.map((s) => [s.structure.id, s.series])));
+        setNetExposureByContract(Object.fromEntries(context.netExposureByContract));
+        setTouchedContractIds(Array.from(context.touchedContractIds));
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to compute correlation analysis");
       } finally {
@@ -117,6 +143,8 @@ export function usePortfolioCorrelation(
     periods,
     rollingWindows,
     openStructureCount: openStructures.length,
+    netExposureByContract,
+    touchedContractIds,
     refresh: () => setNonce((n) => n + 1),
   };
 }

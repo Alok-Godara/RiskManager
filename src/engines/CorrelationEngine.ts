@@ -30,22 +30,47 @@ export interface StructureWithLegs {
 }
 
 /**
- * CorrelationEngine: builds each structure's historical daily value series
- * from settlement prices (never live/intraday quotes — this is a
+ * CorrelationEngine: builds each structure's historical daily EXPOSURE value
+ * series from settlement prices (never live/intraday quotes — this is a
  * day-over-day co-movement read), and computes rolling Pearson correlations
  * between them.
  *
- * A structure's "value" on a given day is sum(ratio_i * outright_settle_i)
- * — the SAME composite-structure-price convention used everywhere else in
- * this app (EntryEngine's avg_price, QuantHubProvider's derived structure
- * quotes). Any leg that's itself a "Structure"-kind quote (e.g. built from
- * Flies) is decomposed to its outright legs first, purely for this
- * historical reconstruction — exactly how InstrumentEngine does it for the
+ * A structure's "value" on a given day is sum(weight_i * outright_settle_i),
+ * where `weight_i` is that leg's ACTUAL SIGNED OPEN QUANTITY (Position.net_
+ * quantity) — never the structure's fixed template ratio. This is the
+ * critical distinction: two structures can share an identical template
+ * shape (e.g. both a "Fly") yet be held in OPPOSITE real directions (one
+ * entered Long, the other Short — direction is chosen per Entry, not baked
+ * into the template, see StructureEngine.addEntry), or at different lot
+ * sizes, or partially exited on some legs but not others. Weighting by
+ * net_quantity means the series — and therefore any correlation computed
+ * from it — reflects what's ACTUALLY held right now: two opposite-direction
+ * positions in the same shape correctly correlate toward -1 (they hedge, a
+ * market move in either direction roughly cancels), not +1 (which is what
+ * you'd get from comparing their template shapes alone, ignoring direction
+ * entirely — the bug this replaced).
+ *
+ * Any leg that's itself a "Structure"-kind quote (e.g. built from Flies) is
+ * decomposed to its outright legs first, purely for this historical
+ * reconstruction — exactly how InstrumentEngine does it for the
  * true-exposure view, and for the same reason: settlements exist per
- * outright contract, not per user-defined structure shape. Because ratio
- * signs already encode Long/Short, correlating these day-over-day diffs is
- * directly a "do these two positions' P&L move together" read: positive =
- * gain/lose together (concentrating), negative = offsetting (diversifying).
+ * outright contract, not per user-defined structure shape. Because the
+ * weights are now real signed exposure, correlating these day-over-day
+ * diffs is directly a "do these two positions' P&L move together" read:
+ * positive = gain/lose together (concentrating), negative = offsetting
+ * (diversifying) — see netExposureByContract below for the complementary,
+ * correlation-free view of the same thing (net lots actually held per
+ * contract, aggregated across the whole book).
+ *
+ * Callers build the `legs` input passed to legsToOutrightWeights /
+ * netExposureByContract as `{ contract_id: leg.contract_id, ratio: position.
+ * net_quantity }` for any EXISTING open structure (see
+ * services/settlementData/correlationContext.ts) — "ratio" here is really
+ * "signed weight," reused as the field name since the math (this class) is
+ * agnostic to what the number represents. A not-yet-created CANDIDATE trade
+ * (AddEntryModal) instead passes its own about-to-be-submitted signed
+ * quantity (leg.ratio * direction * lots), which is what net_quantity WOULD
+ * become the instant that entry is saved.
  */
 export class CorrelationEngine {
   /**
@@ -121,6 +146,34 @@ export class CorrelationEngine {
   ): Contract[] {
     const weights = this.legsToOutrightWeights(legs, contractsById, templatesById, instrumentContractsByInstrument);
     return weights.map((w) => contractsById.get(w.contract_id)).filter((c): c is Contract => Boolean(c));
+  }
+
+  /**
+   * The book's NET aggregated exposure per outright contract, summed
+   * (signed) across every open structure — the direct answer to "if two
+   * positions hedge each other, what does that look like." Two structures
+   * built from the same shape but held in opposite directions decompose to
+   * the same outright contracts with opposite-signed weights, so they net
+   * toward zero here even though each one individually has nonzero
+   * exposure — e.g. a Long Fly (via Fly legs) and an equal-sized Short Fly
+   * (via Spread legs) both touch the same 3 outright months and cancel
+   * exactly. Contracts with exactly zero net weight are omitted; the caller
+   * decides whether to also show "touched but net zero" contracts by
+   * cross-referencing which contracts appear in any individual structure's
+   * own decomposition.
+   */
+  static netExposureByContract(
+    structuresWithLegs: { legs: { contract_id: UUID; ratio: number }[] }[],
+    contractsById: Map<UUID, Contract>,
+    templatesById: Map<UUID, StructureTemplate>,
+    instrumentContractsByInstrument: Map<UUID, Contract[]>
+  ): Map<UUID, number> {
+    const net = new Map<UUID, number>();
+    for (const { legs } of structuresWithLegs) {
+      const weights = this.legsToOutrightWeights(legs, contractsById, templatesById, instrumentContractsByInstrument);
+      for (const w of weights) net.set(w.contract_id, (net.get(w.contract_id) ?? 0) + w.ratio);
+    }
+    return net;
   }
 
   /** sum(ratio_i * settle_i) per trading day; a day is included only if EVERY weighted outright has a settlement for it. */

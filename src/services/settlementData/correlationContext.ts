@@ -1,4 +1,4 @@
-import type { Contract, CorrelationWindow, Instrument, SettlementPrice, Structure, StructureLeg, StructureTemplate, UUID } from "../../types/domain";
+import type { Contract, CorrelationWindow, Instrument, SettlementPrice, Structure, StructureTemplate, UUID } from "../../types/domain";
 import { CORRELATION_WINDOWS } from "../../types/domain";
 import { repository } from "../../data";
 import { CorrelationEngine, type DailySeriesPoint } from "../../engines/CorrelationEngine";
@@ -31,6 +31,10 @@ export interface CorrelationContext {
   templatesById: Map<UUID, StructureTemplate>;
   instrumentContractsByInstrument: Map<UUID, Contract[]>;
   settlements: SettlementPrice[];
+  /** Net (signed) lots per outright contract, aggregated across every open structure passed in — see CorrelationEngine.netExposureByContract. */
+  netExposureByContract: Map<UUID, number>;
+  /** Every outright contract touched by ANY open structure's decomposition, even ones that net to zero — lets the UI show "0 (hedged)" instead of the contract silently disappearing. */
+  touchedContractIds: Set<UUID>;
 }
 
 /**
@@ -47,9 +51,18 @@ export interface CorrelationContext {
  * appear in the returned `openStructures`; build its series separately with
  * CorrelationEngine.legsToOutrightWeights + buildSeries against this same
  * context, so both calls share one fetch pass instead of two.
+ *
+ * `openStructuresWithLegs[].legs` are WEIGHTS, not raw template legs —
+ * `ratio` here must already be each leg's actual signed open quantity
+ * (`position.net_quantity`), never the structure's fixed template ratio
+ * (see CorrelationEngine's file comment for why: two structures with an
+ * identical shape but opposite real directions must decompose to
+ * opposite-signed weights, or their correlation reads backwards). Callers
+ * build this from `StructureSnapshot.legs` as
+ * `{ contract_id: l.leg.contract_id, ratio: l.position.net_quantity }`.
  */
 export async function buildCorrelationContext(
-  openStructuresWithLegs: { structure: Structure; legs: StructureLeg[] }[],
+  openStructuresWithLegs: { structure: Structure; legs: { contract_id: UUID; ratio: number }[] }[],
   contracts: Contract[],
   templates: StructureTemplate[],
   instruments: Instrument[],
@@ -95,12 +108,29 @@ export async function buildCorrelationContext(
   const tradingDates = tradingDaysIncluding(mostRecent, historyTradingDays).map(formatDateParam);
   const settlements = await repository.getSettlementPricesByContracts(Array.from(neededOutrights.keys()));
 
+  const touchedContractIds = new Set<UUID>();
   const openStructures = openStructuresWithLegs.map(({ structure, legs }) => {
     const weights = CorrelationEngine.legsToOutrightWeights(legs, contractsById, templatesById, instrumentContractsByInstrument);
+    for (const w of weights) touchedContractIds.add(w.contract_id);
     return { structure, series: CorrelationEngine.buildSeries(weights, tradingDates, settlements) };
   });
+  const netExposureByContract = CorrelationEngine.netExposureByContract(
+    openStructuresWithLegs,
+    contractsById,
+    templatesById,
+    instrumentContractsByInstrument
+  );
 
-  return { openStructures, tradingDates, contractsById, templatesById, instrumentContractsByInstrument, settlements };
+  return {
+    openStructures,
+    tradingDates,
+    contractsById,
+    templatesById,
+    instrumentContractsByInstrument,
+    settlements,
+    netExposureByContract,
+    touchedContractIds,
+  };
 }
 
 /** Build a candidate's (not-yet-created structure's) daily series from an already-built context — see `extraLegs` above. */

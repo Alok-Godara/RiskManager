@@ -1,7 +1,11 @@
 /**
  * Thin HTTP client for the QuantHub OHLC API.
  *
- * GET {base}/api/v2/ohlc/?instruments=COX26&interval=1M&extraFields=buyvolume,sellvolume
+ * GET {base}/apis/ohlc/?instruments=COX26&interval=1M&extraFields=buyvolume,sellvolume
+ *
+ * The path is `/apis/ohlc/` (plural, no version segment) — QuantHub retired
+ * the old `/api/v2/ohlc/` path this endpoint used to live at, which is why
+ * that one started returning nothing. Same base host, same auth/proxy setup.
  *
  * Auth: the Bearer token is NEVER handled here or shipped in the browser
  * bundle. Requests go to a same-origin path (`/qh-api` by default) which the
@@ -62,8 +66,17 @@ export interface FetchOhlcOptions {
 /** Max instruments per request, per the API docs ("upto: 50"). */
 export const MAX_INSTRUMENTS_PER_REQUEST = 50;
 
-/** QuantHub's published rate limit for this token: 50 requests per minute. */
-export const QUANTHUB_RATE_LIMIT_PER_MINUTE = 50;
+/**
+ * QuantHub's published rate limit for this token on the new `/apis/ohlc/`
+ * endpoint: ~10 requests per minute (down from the old endpoint's 50) —
+ * confirmed by the user 2026-09. Every request-cadence derived from this
+ * constant (see useRiskManagerData's quantHubPollMs) automatically stays
+ * compliant if this number ever changes again.
+ */
+export const QUANTHUB_RATE_LIMIT_PER_MINUTE = 10;
+
+/** Minimum spacing between sequential requests implied by the rate limit above, with headroom (the user asked for "one request every 6-10 seconds"). */
+export const QUANTHUB_MIN_REQUEST_SPACING_MS = Math.ceil(60_000 / QUANTHUB_RATE_LIMIT_PER_MINUTE) + 500;
 
 const API_BASE = (import.meta.env?.VITE_QH_API_BASE ?? "/qh-api").replace(/\/+$/, "");
 
@@ -262,7 +275,7 @@ export async function fetchOhlc(
 
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}/api/v2/ohlc/?${params.toString()}`, {
+    response = await fetch(`${API_BASE}/apis/ohlc/?${params.toString()}`, {
       headers: { accept: "application/json" },
       signal,
     });

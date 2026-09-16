@@ -89,10 +89,11 @@ type Listener = () => void;
 
 /**
  * Backoff bounds for rate-limit cooldowns (see asRateLimitSignal). QuantHub
- * allows 50 requests/minute per token (see QUANTHUB_RATE_LIMIT_PER_MINUTE);
- * polling above that budget gets a 429, and live testing showed recovery
- * can take over 90s of complete silence — so the cap here is deliberately
- * generous rather than tuned to guesswork.
+ * allows ~10 requests/minute per token on /apis/ohlc/ (see
+ * QUANTHUB_RATE_LIMIT_PER_MINUTE); polling above that budget gets a 429, and
+ * live testing on the old (50/min) endpoint showed recovery can take over
+ * 90s of complete silence — so the cap here is deliberately generous rather
+ * than tuned to guesswork.
  */
 const MIN_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 90_000;

@@ -1,8 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { Contract, CorrelationWindow, Instrument, StructureSnapshot, StructureTemplate } from "../types/domain";
 import { CORRELATION_WINDOWS } from "../types/domain";
 import { CorrelationEngine } from "../engines/CorrelationEngine";
 import { usePortfolioCorrelation } from "../hooks/usePortfolioCorrelation";
+import { sortContractsChronologically } from "../utils/contractGen";
+
+const ZERO_EXPOSURE_EPSILON = 1e-6;
 
 function correlationClass(c: number | undefined, threshold: number): string {
   if (c === undefined) return "muted";
@@ -40,10 +43,50 @@ export function CorrelationPanel({
   instruments: Instrument[];
 }) {
   const [window, setWindow] = useState<CorrelationWindow>(15);
-  const { loading, error, analysesByWindow, seriesByStructureId, thresholds, periods, rollingWindows, openStructureCount, refresh } =
-    usePortfolioCorrelation(snapshots, contracts, templates, instruments);
+  const {
+    loading,
+    error,
+    analysesByWindow,
+    seriesByStructureId,
+    thresholds,
+    periods,
+    rollingWindows,
+    openStructureCount,
+    netExposureByContract,
+    touchedContractIds,
+    refresh,
+  } = usePortfolioCorrelation(snapshots, contracts, templates, instruments);
 
   const analysis = analysesByWindow?.[window];
+
+  // Grouped by instrument (alphabetical), each instrument's own contracts
+  // chronological — the direct "do these positions actually net out" view,
+  // independent of correlation/settlement history (pure position math, so
+  // it's available even with 1 open structure or zero settlement data).
+  const exposureRows = useMemo(() => {
+    const contractsById = new Map(contracts.map((c) => [c.id, c]));
+    const instrumentsById = new Map(instruments.map((i) => [i.id, i]));
+    const touched = touchedContractIds.map((id) => contractsById.get(id)).filter((c): c is Contract => Boolean(c));
+    const byInstrument = new Map<string, Contract[]>();
+    for (const c of touched) {
+      const list = byInstrument.get(c.instrument_id) ?? [];
+      list.push(c);
+      byInstrument.set(c.instrument_id, list);
+    }
+    const instrumentGroups = Array.from(byInstrument.entries())
+      .map(([instrumentId, group]) => ({
+        instrument: instrumentsById.get(instrumentId),
+        contracts: sortContractsChronologically(group),
+      }))
+      .sort((a, b) => (a.instrument?.symbol ?? "").localeCompare(b.instrument?.symbol ?? ""));
+    return instrumentGroups.flatMap(({ instrument, contracts: group }) =>
+      group.map((contract) => ({
+        instrumentSymbol: instrument?.symbol ?? "—",
+        contract,
+        net: netExposureByContract[contract.id] ?? 0,
+      }))
+    );
+  }, [touchedContractIds, netExposureByContract, contracts, instruments]);
 
   // Most-correlated pairs first, undefined last.
   const sortedPairs = analysis
@@ -79,11 +122,44 @@ export function CorrelationPanel({
         Settings → Correlation &amp; Concentration.
       </p>
 
-      {openStructureCount < 2 && !loading && (
-        <p className="helper-text">Open at least 2 structures to see correlation analysis.</p>
+      {error && <p className="helper-text" style={{ color: "var(--red)" }}>{error}</p>}
+
+      {exposureRows.length > 0 && (
+        <>
+          <h4>Net Portfolio Exposure — Actual Lots Held, Aggregated Across All Open Structures</h4>
+          <p className="helper-text">
+            Every outright contract any open structure touches, netted (signed) across the whole book — the direct
+            "do these positions actually offset" view. A contract at 0 here is fully hedged even if individual
+            structures each carry nonzero exposure on it.
+          </p>
+          <table className="data-table compact">
+            <thead>
+              <tr>
+                <th>Instrument</th>
+                <th>Contract</th>
+                <th>Net Lots</th>
+              </tr>
+            </thead>
+            <tbody>
+              {exposureRows.map(({ instrumentSymbol, contract, net }) => (
+                <tr key={contract.id}>
+                  <td>{instrumentSymbol}</td>
+                  <td>{contract.month_label}</td>
+                  <td className={Math.abs(net) < ZERO_EXPOSURE_EPSILON ? "muted" : net > 0 ? "pnl-pos" : "pnl-neg"}>
+                    {Math.abs(net) < ZERO_EXPOSURE_EPSILON
+                      ? "0 (hedged)"
+                      : `${net > 0 ? "+" : ""}${net.toFixed(2)}`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
       )}
 
-      {error && <p className="helper-text" style={{ color: "var(--red)" }}>{error}</p>}
+      {openStructureCount < 2 && !loading && (
+        <p className="helper-text">Open at least 2 structures to see pairwise correlation analysis.</p>
+      )}
 
       {loading && !analysis && <p className="helper-text">Fetching settlement history and computing correlations…</p>}
 

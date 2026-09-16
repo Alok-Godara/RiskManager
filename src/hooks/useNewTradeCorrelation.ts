@@ -38,10 +38,17 @@ export function useNewTradeCorrelation(
     () => snapshots.filter((s) => s.structure.status !== "Fully Closed" && s.structure.id !== excludeStructureId),
     [snapshots, excludeStructureId]
   );
+  // Includes each leg's CURRENT net_quantity (not just contract_id) — see
+  // the matching comment in usePortfolioCorrelation.ts.
   const structureSignature = useMemo(
     () =>
       openStructures
-        .map((s) => `${s.structure.id}:${s.structure.current_dollar_risk}:${s.legs.map((l) => `${l.leg.contract_id}=${l.leg.ratio}`).join(",")}`)
+        .map(
+          (s) =>
+            `${s.structure.id}:${s.structure.current_dollar_risk}:${s.legs
+              .map((l) => `${l.leg.contract_id}=${l.position.net_quantity}`)
+              .join(",")}`
+        )
         .sort()
         .join("|"),
     [openStructures]
@@ -62,7 +69,15 @@ export function useNewTradeCorrelation(
         if (cancelled) return;
         setThresholds({ correlation: settings.correlation, concentration: settings.concentration });
 
-        const withLegs = openStructures.map((s) => ({ structure: s.structure, legs: s.legs.map((l) => l.leg) }));
+        // Weight each existing leg by its ACTUAL signed open quantity, not
+        // the structure's fixed template ratio — see CorrelationEngine's
+        // file comment. The candidate side (candidateWeights, built in
+        // AddEntryModal) is already scaled by this entry's own direction
+        // and lots, so both sides of the comparison are real exposure.
+        const withLegs = openStructures.map((s) => ({
+          structure: s.structure,
+          legs: s.legs.map((l) => ({ contract_id: l.leg.contract_id, ratio: l.position.net_quantity })),
+        }));
         const context = await buildCorrelationContext(
           withLegs,
           contracts,

@@ -167,6 +167,41 @@ export class StructureEngine {
   }
 
   /**
+   * Change a structure's Initial Risk (the "possible/willing risk" budget
+   * set at creation, per spec — see StructureDetail's Initial Risk /
+   * Active Risk / Unallocated Risk breakdown). `current_dollar_risk` is
+   * recomputed from the new initial risk + realized P&L to date, the same
+   * formula recomputeLegFull/RiskEngine.syncStructureRisk already use, so
+   * it never drifts out of sync with the field it's derived from.
+   */
+  static async updateInitialRisk(structureId: UUID, newInitialRisk: number): Promise<Structure> {
+    const structure = await repository.getStructure(structureId);
+    if (!structure) throw new Error("Structure not found");
+    if (!Number.isFinite(newInitialRisk) || newInitialRisk < 0) throw new Error("Risk must be zero or greater");
+    if (newInitialRisk === structure.initial_dollar_risk) return structure;
+
+    const legs = await repository.getLegsByStructure(structureId);
+    let totalRealized = 0;
+    for (const l of legs) {
+      const pos = await repository.getPositionByLeg(l.id);
+      totalRealized += pos?.realized_pnl ?? 0;
+    }
+
+    const updated: Structure = {
+      ...structure,
+      initial_dollar_risk: newInitialRisk,
+      current_dollar_risk: RiskEngine.computeAdjustedRisk(newInitialRisk, totalRealized),
+    };
+    await repository.upsertStructure(updated);
+    await this.audit({
+      event_type: "RiskModified",
+      structure_id: structureId,
+      description: `Initial risk changed from ${structure.initial_dollar_risk} to ${newInitialRisk}`,
+    });
+    return updated;
+  }
+
+  /**
    * Permanently delete a structure and everything under it (legs,
    * executions, positions, realized P&L, risk allocations, stop loss
    * history) — irreversible, unlike exit/delete-execution which keep full
