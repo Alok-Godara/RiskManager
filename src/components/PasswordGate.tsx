@@ -9,25 +9,15 @@ import { useState, type FormEvent, type ReactNode } from "react";
  * actually wants in. If real access control is ever needed, this should be
  * replaced with server-side auth, not hardened further.
  *
- * Change PASSWORD below any time. Bump PASSWORD_VERSION alongside it if you
- * also want everyone who already unlocked (their browser has the old
- * version's localStorage flag) to be prompted again.
+ * Deliberately NOT remembered anywhere (no localStorage/sessionStorage/
+ * cookie) — every full page load prompts again, by request.
+ *
+ * Change PASSWORD below any time.
  */
 const PASSWORD = "changeme";
-const PASSWORD_VERSION = "1";
-const STORAGE_KEY = `risk-manager-unlocked-v${PASSWORD_VERSION}`;
-
-function readUnlocked(): boolean {
-  try {
-    return localStorage.getItem(STORAGE_KEY) === "true";
-  } catch {
-    // localStorage unavailable (private browsing, disabled storage, etc.) — fall through to the prompt every load.
-    return false;
-  }
-}
 
 export function PasswordGate({ children }: { children: ReactNode }) {
-  const [unlocked, setUnlocked] = useState(readUnlocked);
+  const [unlocked, setUnlocked] = useState(false);
   const [input, setInput] = useState("");
   const [showError, setShowError] = useState(false);
 
@@ -36,11 +26,6 @@ export function PasswordGate({ children }: { children: ReactNode }) {
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (input === PASSWORD) {
-      try {
-        localStorage.setItem(STORAGE_KEY, "true");
-      } catch {
-        // Ignore — still unlock for this page load even if it can't be remembered.
-      }
       setUnlocked(true);
     } else {
       setShowError(true);
