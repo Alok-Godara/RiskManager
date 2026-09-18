@@ -63,6 +63,46 @@ body {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---------------------------------------------------------------------- */
+/* Password gate (decorative — see components/PasswordGate.tsx)          */
+/* ---------------------------------------------------------------------- */
+.password-gate {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: var(--bg);
+  padding: 20px;
+}
+.password-gate-card {
+  width: 100%;
+  max-width: 320px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 28px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.password-gate-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.password-gate-card label {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+.password-gate-error {
+  font-size: 0.76rem;
+  color: var(--red);
+  margin: -4px 0 0;
+}
+
+/* ---------------------------------------------------------------------- */
 /* Shell / sidebar layout                                                 */
 /* ---------------------------------------------------------------------- */
 .app-shell {

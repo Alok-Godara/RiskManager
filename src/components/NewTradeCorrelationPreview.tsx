@@ -13,11 +13,12 @@ const VERDICT_CLASS: Record<string, string> = {
 /**
  * "Before taking this entry, understand how it interacts with the existing
  * portfolio" — shown live in AddEntryModal once a candidate's outright
- * exposure (`candidateWeights`, already scaled by this entry's own
- * direction and lot size) is resolvable, against every OTHER currently open
- * structure (`excludeStructureId` leaves the structure being entered out of
- * its own comparison). Renders nothing if there's no candidate yet or no
- * other open book to compare against.
+ * exposure (`candidateWeights` — this structure's EXISTING open position
+ * plus this entry's own incremental direction/lots, see AddEntryModal) is
+ * resolvable, against every OTHER currently open structure
+ * (`excludeStructureId` leaves this structure's own other entries out,
+ * since they're already folded into `candidateWeights`). Renders nothing if
+ * there's no candidate yet or no other open book to compare against.
  */
 export function NewTradeCorrelationPreview({
   candidateWeights,
@@ -61,7 +62,7 @@ export function NewTradeCorrelationPreview({
   return (
     <div className="form-row">
       <div className="panel-header" style={{ marginBottom: 8 }}>
-        <label style={{ margin: 0 }}>This Entry vs. Your Portfolio</label>
+        <label style={{ margin: 0 }}>This Structure (Existing + This Entry) vs. Your Portfolio</label>
         <div className="segmented">
           {CORRELATION_WINDOWS.map((w) => (
             <button key={w} type="button" className={window === w ? "active" : ""} onClick={() => setWindow(w)}>

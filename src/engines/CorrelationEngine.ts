@@ -121,6 +121,21 @@ export class CorrelationEngine {
   }
 
   /**
+   * Merges multiple {contract_id, ratio} weight arrays by summing ratio per
+   * contract_id — e.g. combining a structure's EXISTING held position with
+   * an incremental new entry's own weights, so the result reflects "what
+   * this structure's net position becomes after this entry," not the entry
+   * in isolation (see AddEntryModal.tsx's candidateWeights).
+   */
+  static sumWeights(weightLists: LegWeight[][]): LegWeight[] {
+    const merged = new Map<UUID, number>();
+    for (const weights of weightLists) {
+      for (const w of weights) merged.set(w.contract_id, (merged.get(w.contract_id) ?? 0) + w.ratio);
+    }
+    return Array.from(merged.entries()).map(([contract_id, ratio]) => ({ contract_id, ratio }));
+  }
+
+  /**
    * A structure's current net open size, in "structure lots" — the anchor
    * leg's (largest |ratio|, same convention EntryEngine uses per-entry)
    * |net_quantity| / |ratio|. Used to weight how much a structure's
@@ -135,6 +150,23 @@ export class CorrelationEngine {
     const anchor = legs.reduce((a, b) => (Math.abs(b.leg.ratio) > Math.abs(a.leg.ratio) ? b : a));
     const ratioAbs = Math.abs(anchor.leg.ratio);
     return ratioAbs > 0 ? Math.abs(anchor.position.net_quantity) / ratioAbs : 0;
+  }
+
+  /**
+   * Signed sibling of structureExposureLots — same anchor-leg convention,
+   * but keeps the sign instead of taking its magnitude (e.g. "+20" for a
+   * Long 20-lot position, "-5" for Short 5) — for displaying a structure's
+   * actual current net direction, not just its size. Dividing by the
+   * anchor's SIGNED ratio (not its absolute value) is what recovers the
+   * sign correctly: net_quantity = leg.ratio * direction * lots (see
+   * StructureEngine.addEntry), so net_quantity / leg.ratio = direction *
+   * lots — positive for Long, negative for Short — even on a leg whose own
+   * template ratio is negative (e.g. a Fly's middle leg).
+   */
+  static structureNetLotsSigned(legs: { leg: { ratio: number }; position: { net_quantity: number } }[]): number {
+    if (legs.length === 0) return 0;
+    const anchor = legs.reduce((a, b) => (Math.abs(b.leg.ratio) > Math.abs(a.leg.ratio) ? b : a));
+    return anchor.leg.ratio !== 0 ? anchor.position.net_quantity / anchor.leg.ratio : 0;
   }
 
   /** The outright Contract objects `legs` ultimately touch — what to fetch/ensure settlement history for. */
@@ -206,12 +238,8 @@ export class CorrelationEngine {
     return out;
   }
 
-  /**
-   * Pearson correlation coefficient. Undefined (not 0) when there's too
-   * little data or either series has zero variance — 0 would misleadingly
-   * read as "confirmed no relationship" rather than "can't tell."
-   */
-  static pearsonCorrelation(a: number[], b: number[]): number | undefined {
+  /** Shared covariance/variance arithmetic behind pearsonCorrelation and betaFromArrays — undefined when there's too little data to say anything. */
+  private static covStats(a: number[], b: number[]): { cov: number; varA: number; varB: number } | undefined {
     if (a.length !== b.length || a.length < 2) return undefined;
     const n = a.length;
     const meanA = a.reduce((s, x) => s + x, 0) / n;
@@ -226,8 +254,31 @@ export class CorrelationEngine {
       varA += da * da;
       varB += db * db;
     }
-    if (varA === 0 || varB === 0) return undefined;
-    return cov / Math.sqrt(varA * varB);
+    return { cov, varA, varB };
+  }
+
+  /**
+   * Pearson correlation coefficient. Undefined (not 0) when there's too
+   * little data or either series has zero variance — 0 would misleadingly
+   * read as "confirmed no relationship" rather than "can't tell."
+   */
+  static pearsonCorrelation(a: number[], b: number[]): number | undefined {
+    const stats = this.covStats(a, b);
+    if (!stats || stats.varA === 0 || stats.varB === 0) return undefined;
+    return stats.cov / Math.sqrt(stats.varA * stats.varB);
+  }
+
+  /**
+   * OLS regression slope of A on B (`Cov(a,b) / Var(b)`) — "how much does A
+   * move per $1 move in B," NOT the same as correlation (which only says
+   * whether they move together, not by how much) and NOT the reciprocal of
+   * betaFromArrays(b, a) in general (only when correlation is exactly ±1).
+   * Undefined when B has zero variance or there's too little data.
+   */
+  static betaFromArrays(a: number[], b: number[]): number | undefined {
+    const stats = this.covStats(a, b);
+    if (!stats || stats.varB === 0) return undefined;
+    return stats.cov / stats.varB;
   }
 
   /**
@@ -258,6 +309,59 @@ export class CorrelationEngine {
       correlation: this.pearsonCorrelation(a, b),
       observations: commonDates.length,
     };
+  }
+
+  /**
+   * Regression beta of A on B over the most recent `actualDays` common
+   * diffs — same date-alignment/window pattern as rollingCorrelation, but
+   * answers a different question: correlation says whether A and B move
+   * together; beta says how MUCH A moves for a $1 move in B. A strongly
+   * anti-correlated pair can still need a very uneven lot ratio to actually
+   * hedge if one moves much more than the other per lot (e.g. a near-month
+   * vs. a far-month structure) — that's what this is for.
+   */
+  static regressionBeta(seriesA: DailySeriesPoint[], seriesB: DailySeriesPoint[], actualDays: number): { beta?: number; observations: number } {
+    const diffsA = this.seriesDiffs(seriesA);
+    const diffsB = this.seriesDiffs(seriesB);
+    const commonDates = Array.from(diffsA.keys())
+      .filter((d) => diffsB.has(d))
+      .sort()
+      .slice(-actualDays);
+    const a = commonDates.map((d) => diffsA.get(d)!);
+    const b = commonDates.map((d) => diffsB.get(d)!);
+    return { beta: this.betaFromArrays(a, b), observations: commonDates.length };
+  }
+
+  /** Standard deviation of a series' day-over-day diffs over the trailing `actualDays` — a $ volatility figure when `series` is already dollar-denominated. Undefined on too few points. */
+  static dollarVolatility(series: DailySeriesPoint[], actualDays: number): number | undefined {
+    const diffs = this.seriesDiffs(series);
+    const dates = Array.from(diffs.keys()).sort().slice(-actualDays);
+    if (dates.length < 2) return undefined;
+    const values = dates.map((d) => diffs.get(d)!);
+    const mean = values.reduce((s, x) => s + x, 0) / values.length;
+    const variance = values.reduce((s, x) => s + (x - mean) ** 2, 0) / values.length;
+    return Math.sqrt(variance);
+  }
+
+  /**
+   * Standard deviation of the SUMMED day-over-day diffs across multiple
+   * dollar-denominated series — the actual combined P&L volatility of
+   * holding all of them together, capturing real offsetting/hedging via
+   * covariance (unlike naively adding each one's own volatility). A date
+   * missing from one series contributes 0 from it that day rather than
+   * dropping the date entirely — a leg with no settlement that day simply
+   * didn't move the combined total, same as it would in reality.
+   */
+  static combinedDollarVolatility(seriesList: DailySeriesPoint[][], actualDays: number): number | undefined {
+    const diffMaps = seriesList.map((s) => this.seriesDiffs(s));
+    const allDates = new Set<string>();
+    for (const m of diffMaps) for (const d of m.keys()) allDates.add(d);
+    const dates = Array.from(allDates).sort().slice(-actualDays);
+    if (dates.length < 2) return undefined;
+    const combined = dates.map((d) => diffMaps.reduce((sum, m) => sum + (m.get(d) ?? 0), 0));
+    const mean = combined.reduce((s, x) => s + x, 0) / combined.length;
+    const variance = combined.reduce((s, x) => s + (x - mean) ** 2, 0) / combined.length;
+    return Math.sqrt(variance);
   }
 
   /**
@@ -375,24 +479,32 @@ export class CorrelationEngine {
   /**
    * Portfolio-level concentration: are the currently open structures, taken
    * together, behaving like one big directional bet rather than a
-   * diversified book? Built purely from the pairwise correlation matrix
-   * (no synthetic "market index" — see CorrelationEngine's file comment),
-   * weighted by each structure's actual open exposure (`exposureById`, from
-   * structureExposureLots) so large POSITIONS dominate the read more than
-   * small ones — deliberately NOT current_dollar_risk (a stop-loss budget
-   * that can diverge from real position size, e.g. three small structures
-   * with a combined 10 lots vs. one 10-lot hedge shouldn't read as
-   * "1 structure vs. 3" just because dollar risk happens to be allocated
-   * unevenly):
+   * diversified book?
    *
-   *   sameDirectionRiskFraction =
-   *     sum over positively-correlated pairs of [correlation * min(exposure_i, exposure_j)]
-   *     ─────────────────────────────────────────────────────────────────────
-   *     sum over ALL pairs of [min(exposure_i, exposure_j)]
+   * sameDirectionRiskFraction = netDollarRisk / grossDollarRisk, where:
+   *   - grossDollarRisk = Σ dollarVolatility(each structure's OWN $ series)
+   *     — the naive total risk if nothing offset anything.
+   *   - netDollarRisk = combinedDollarVolatility(every structure's $ series
+   *     together) — the book's ACTUAL combined P&L volatility, capturing
+   *     real offsetting via covariance.
    *
-   * A portfolio whose pairs are mostly strongly positively correlated
-   * scores close to 1 (one-directional); one whose pairs offset (negative
-   * correlation) or are unrelated scores low.
+   * This replaces an earlier PAIRWISE-only formula (weighted by
+   * min(exposure_i, exposure_j) per pair) that had a real blind spot: e.g.
+   * Structure A = +100 lots vs. Structure B = -5 lots, strongly
+   * anti-correlated, used to read as "0% same-direction risk" (fully
+   * hedged) because the pair-weight was capped at the SMALLER side (5),
+   * hiding the ~95 unhedged lots entirely. The gross/net $ volatility ratio
+   * doesn't have that blind spot — a tiny hedge barely moves netDollarRisk
+   * off grossDollarRisk, correctly reading as still mostly concentrated.
+   * 0 = fully offsetting; ~1 = no diversification benefit at all.
+   *
+   * `dollarSeriesById` must be each structure's POSITION-weighted series
+   * (net_quantity, not template ratio) converted to $ via its own
+   * instrument's tick_value/tick_size — see correlationContext.ts.
+   *
+   * `pairs`/`highCorrelationPairs`/`drivingPairs` stay pairwise-correlation
+   * diagnostics ("which pairs move together") — still useful on their own,
+   * just no longer the source of the headline number above.
    */
   static analyzePortfolioConcentration(
     structuresWithSeries: { structure: Structure; series: DailySeriesPoint[] }[],
@@ -400,7 +512,8 @@ export class CorrelationEngine {
     windowConfig: Record<CorrelationWindow, number>,
     correlationWarningThreshold: number,
     concentrationRiskThreshold: number,
-    exposureById: Map<UUID, number>
+    exposureById: Map<UUID, number>,
+    dollarSeriesById: Map<UUID, DailySeriesPoint[]>
   ): PortfolioConcentrationAnalysis {
     const pairs: StructurePairCorrelation[] = [];
 
@@ -424,36 +537,44 @@ export class CorrelationEngine {
       return c !== undefined && Math.abs(c) >= correlationWarningThreshold;
     });
 
-    let weightedPositive = 0;
-    let totalWeight = 0;
+    // Diagnostic-only now (doesn't feed sameDirectionRiskFraction below) —
+    // "which positively-correlated pairs, weighted by their smaller side's
+    // lots, are the biggest same-direction contributors" is still a useful
+    // thing to surface even though the headline number is computed
+    // differently.
     const contributions: { pair: StructurePairCorrelation; contribution: number }[] = [];
-
     for (const pair of pairs) {
       const correlation = windowOf(pair)?.correlation;
-      if (correlation === undefined) continue;
+      if (correlation === undefined || correlation <= 0) continue;
       const weight = Math.min(exposureById.get(pair.structure_a_id) ?? 0, exposureById.get(pair.structure_b_id) ?? 0);
       if (weight <= 0) continue;
-      totalWeight += weight;
-      if (correlation > 0) {
-        const contribution = correlation * weight;
-        weightedPositive += contribution;
-        contributions.push({ pair, contribution });
-      }
+      contributions.push({ pair, contribution: correlation * weight });
     }
-
-    const sameDirectionRiskFraction = totalWeight > 0 ? weightedPositive / totalWeight : undefined;
-    const isConcentrated = sameDirectionRiskFraction !== undefined && sameDirectionRiskFraction >= concentrationRiskThreshold;
-
     const drivingPairs = contributions
       .sort((a, b) => b.contribution - a.contribution)
       .slice(0, 5)
       .map((c) => c.pair);
 
+    const actualDays = windowConfig[window];
+    const dollarSeriesList = structuresWithSeries
+      .map((s) => dollarSeriesById.get(s.structure.id))
+      .filter((s): s is DailySeriesPoint[] => s !== undefined && s.length > 0);
+    const grossDollarRisk = dollarSeriesList.reduce((sum, s) => {
+      const vol = this.dollarVolatility(s, actualDays);
+      return vol !== undefined ? sum + vol : sum;
+    }, 0);
+    const netDollarRisk = this.combinedDollarVolatility(dollarSeriesList, actualDays);
+    const sameDirectionRiskFraction =
+      netDollarRisk !== undefined && grossDollarRisk > 0 ? netDollarRisk / grossDollarRisk : undefined;
+    const isConcentrated = sameDirectionRiskFraction !== undefined && sameDirectionRiskFraction >= concentrationRiskThreshold;
+
     const warnings: string[] = [];
     if (isConcentrated) {
       const names = drivingPairs.map((p) => `"${p.structure_a_name}" / "${p.structure_b_name}"`).join(", ");
       warnings.push(
-        `Portfolio is becoming one-directional: ${((sameDirectionRiskFraction ?? 0) * 100).toFixed(0)}% of exposure-weighted (lot-based, not dollar-risk) pairwise correlation at ${window}d is mutually reinforcing rather than offsetting. Driven by: ${names}.`
+        `Portfolio is concentrated: the book's net $ volatility is ${((sameDirectionRiskFraction ?? 0) * 100).toFixed(0)}% of what it would be with nothing offsetting anything, at ${window}d — current positions aren't hedging each other much.${
+          names ? ` Most-correlated pairs: ${names}.` : ""
+        }`
       );
     }
     for (const p of highCorrelationPairs) {
@@ -461,6 +582,6 @@ export class CorrelationEngine {
       warnings.push(`"${p.structure_a_name}" and "${p.structure_b_name}" are highly correlated (${c.toFixed(2)}, ${window}d).`);
     }
 
-    return { window, pairs, highCorrelationPairs, sameDirectionRiskFraction, isConcentrated, drivingPairs, warnings };
+    return { window, pairs, highCorrelationPairs, sameDirectionRiskFraction, isConcentrated, drivingPairs, warnings, grossDollarRisk, netDollarRisk };
   }
 }

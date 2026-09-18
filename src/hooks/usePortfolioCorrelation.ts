@@ -13,6 +13,10 @@ export interface PortfolioCorrelationState {
   analysesByWindow: Record<CorrelationWindow, PortfolioConcentrationAnalysis> | null;
   /** Each open structure's daily value series — for computing a rolling trend (CorrelationEngine.rollingCorrelationTrend) per pair in the panel, without re-fetching. */
   seriesByStructureId: Record<UUID, DailySeriesPoint[]>;
+  /** Template-ratio-weighted $ series per structure (independent of lots currently held) — for Beta/Hedge Ratio (CorrelationEngine.regressionBeta), computed live in the panel per pair. */
+  perLotDollarSeriesByStructureId: Record<UUID, DailySeriesPoint[]>;
+  /** Position-weighted (net_quantity) $ series per structure — for $ volatility / risk-impact math (CorrelationEngine.dollarVolatility). */
+  positionDollarSeriesByStructureId: Record<UUID, DailySeriesPoint[]>;
   thresholds: { correlation: number; concentration: number };
   periods: Record<CorrelationWindow, number>;
   rollingWindows: Record<CorrelationWindow, number>;
@@ -46,6 +50,8 @@ export function usePortfolioCorrelation(
   const [error, setError] = useState<string | undefined>();
   const [analysesByWindow, setAnalysesByWindow] = useState<Record<CorrelationWindow, PortfolioConcentrationAnalysis> | null>(null);
   const [seriesByStructureId, setSeriesByStructureId] = useState<Record<UUID, DailySeriesPoint[]>>({});
+  const [perLotDollarSeriesByStructureId, setPerLotDollarSeriesByStructureId] = useState<Record<UUID, DailySeriesPoint[]>>({});
+  const [positionDollarSeriesByStructureId, setPositionDollarSeriesByStructureId] = useState<Record<UUID, DailySeriesPoint[]>>({});
   const [thresholds, setThresholds] = useState({ correlation: 0.7, concentration: 0.65 });
   const [periods, setPeriods] = useState<Record<CorrelationWindow, number>>({ 5: 5, 15: 15, 30: 30 });
   const [rollingWindows, setRollingWindows] = useState<Record<CorrelationWindow, number>>({ 5: 5, 15: 5, 30: 7 });
@@ -85,15 +91,14 @@ export function usePortfolioCorrelation(
         setPeriods(settings.periods);
         setRollingWindows(settings.rollingWindows);
 
-        // Weight each leg by its ACTUAL signed open quantity, not the
-        // structure's fixed template ratio — see CorrelationEngine's file
-        // comment. This is what makes two opposite-direction positions in
-        // the same shape correctly read as hedging (negative correlation)
-        // instead of concentrating (positive) just because their template
-        // shapes move together.
+        // Each leg carries BOTH its template ratio and its ACTUAL signed
+        // open quantity — buildCorrelationContext builds a position-weighted
+        // series (net_quantity, for correlation/exposure) and a per-lot
+        // series (ratio, for Beta/Hedge Ratio) from these. See
+        // CorrelationEngine's file comment for why direction must be real.
         const withLegs = openStructures.map((s) => ({
           structure: s.structure,
-          legs: s.legs.map((l) => ({ contract_id: l.leg.contract_id, ratio: l.position.net_quantity })),
+          legs: s.legs.map((l) => ({ contract_id: l.leg.contract_id, ratio: l.leg.ratio, net_quantity: l.position.net_quantity })),
         }));
         const context = await buildCorrelationContext(withLegs, contracts, templates, instruments, historyTradingDaysFor(settings.periods));
         if (cancelled) return;
@@ -101,6 +106,7 @@ export function usePortfolioCorrelation(
         // Actual open lots per structure, not current_dollar_risk — see
         // CorrelationEngine.structureExposureLots.
         const exposureById = new Map(openStructures.map((s) => [s.structure.id, CorrelationEngine.structureExposureLots(s.legs)]));
+        const dollarSeriesById = new Map(context.openStructures.map((s) => [s.structure.id, s.positionDollarSeries]));
 
         const byWindow = {} as Record<CorrelationWindow, PortfolioConcentrationAnalysis>;
         for (const window of CORRELATION_WINDOWS) {
@@ -110,11 +116,14 @@ export function usePortfolioCorrelation(
             settings.periods,
             settings.correlation,
             settings.concentration,
-            exposureById
+            exposureById,
+            dollarSeriesById
           );
         }
         setAnalysesByWindow(byWindow);
         setSeriesByStructureId(Object.fromEntries(context.openStructures.map((s) => [s.structure.id, s.series])));
+        setPerLotDollarSeriesByStructureId(Object.fromEntries(context.openStructures.map((s) => [s.structure.id, s.perLotDollarSeries])));
+        setPositionDollarSeriesByStructureId(Object.fromEntries(context.openStructures.map((s) => [s.structure.id, s.positionDollarSeries])));
         setNetExposureByContract(Object.fromEntries(context.netExposureByContract));
         setTouchedContractIds(Array.from(context.touchedContractIds));
       } catch (err) {
@@ -139,6 +148,8 @@ export function usePortfolioCorrelation(
     error,
     analysesByWindow,
     seriesByStructureId,
+    perLotDollarSeriesByStructureId,
+    positionDollarSeriesByStructureId,
     thresholds,
     periods,
     rollingWindows,

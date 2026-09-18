@@ -44,12 +44,15 @@ export function AddEntryModal({
     });
   }, [snapshot.structure.instrument_id]);
 
-  // This entry's own outright exposure — legs decomposed the same way
-  // CorrelationEngine does for any Structure-kind leg, scaled by THIS
-  // entry's direction and size (not the structure's total open exposure),
-  // so correlation reflects the actual lots being added right now. See
-  // engines/CorrelationEngine.ts / useNewTradeCorrelation's excludeStructureId
-  // (this structure's own other entries never correlate against this one).
+  // This structure's RESULTING outright exposure if this entry is saved —
+  // its existing open position (from the legs already on the book) PLUS
+  // this entry's own incremental exposure, not the entry in isolation. An
+  // entry never gets evaluated as if it were the only thing on this
+  // structure: a second entry on top of an already-open first one must
+  // reflect both, or the portfolio-vs-candidate correlation preview would
+  // silently ignore whatever's already held here (see excludeStructureId
+  // below — this structure's own EXISTING position is folded into the
+  // candidate instead of being compared against separately).
   const candidateWeights = useMemo(() => {
     const contractsById = new Map(contracts.map((c) => [c.id, c]));
     const templatesById = new Map(templates.map((t) => [t.id, t]));
@@ -59,9 +62,24 @@ export function AddEntryModal({
       list.push(c);
       instrumentContractsByInstrument.set(c.instrument_id, list);
     }
-    const legInputs = legs.map((l) => ({ contract_id: l.leg.contract_id, ratio: l.leg.ratio }));
-    const base = CorrelationEngine.legsToOutrightWeights(legInputs, contractsById, templatesById, instrumentContractsByInstrument);
-    return base.map((w) => ({ contract_id: w.contract_id, ratio: w.ratio * direction * structureLots }));
+    const existingLegInputs = legs.map((l) => ({ contract_id: l.leg.contract_id, ratio: l.position.net_quantity }));
+    const existingWeights = CorrelationEngine.legsToOutrightWeights(
+      existingLegInputs,
+      contractsById,
+      templatesById,
+      instrumentContractsByInstrument
+    );
+
+    const incrementalLegInputs = legs.map((l) => ({ contract_id: l.leg.contract_id, ratio: l.leg.ratio }));
+    const incrementalBase = CorrelationEngine.legsToOutrightWeights(
+      incrementalLegInputs,
+      contractsById,
+      templatesById,
+      instrumentContractsByInstrument
+    );
+    const incrementalWeights = incrementalBase.map((w) => ({ contract_id: w.contract_id, ratio: w.ratio * direction * structureLots }));
+
+    return CorrelationEngine.sumWeights([existingWeights, incrementalWeights]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [legs, contracts, templates, direction, structureLots]);
 

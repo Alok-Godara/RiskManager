@@ -25,7 +25,15 @@ export function historyTradingDaysFor(periods: Record<CorrelationWindow, number>
 }
 
 export interface CorrelationContext {
-  openStructures: { structure: Structure; series: DailySeriesPoint[] }[];
+  openStructures: {
+    structure: Structure;
+    /** Position-weighted (net_quantity) series — the basis for correlation and for portfolio-level exposure, since it reflects what's actually held. */
+    series: DailySeriesPoint[];
+    /** Same position-weighted series, converted to $ via the structure's own instrument's tick_value/tick_size — for $ volatility/risk-impact math (CorrelationEngine.dollarVolatility / combinedDollarVolatility). */
+    positionDollarSeries: DailySeriesPoint[];
+    /** Template-ratio-weighted series (independent of how many lots are currently held), converted to $ — the basis for Beta/regression and Hedge Ratio, which are properties of the structures' shapes, not of current position size. */
+    perLotDollarSeries: DailySeriesPoint[];
+  }[];
   tradingDates: string[]; // YYYY-MM-DD, oldest..newest
   contractsById: Map<UUID, Contract>;
   templatesById: Map<UUID, StructureTemplate>;
@@ -52,17 +60,18 @@ export interface CorrelationContext {
  * CorrelationEngine.legsToOutrightWeights + buildSeries against this same
  * context, so both calls share one fetch pass instead of two.
  *
- * `openStructuresWithLegs[].legs` are WEIGHTS, not raw template legs —
- * `ratio` here must already be each leg's actual signed open quantity
- * (`position.net_quantity`), never the structure's fixed template ratio
- * (see CorrelationEngine's file comment for why: two structures with an
- * identical shape but opposite real directions must decompose to
- * opposite-signed weights, or their correlation reads backwards). Callers
- * build this from `StructureSnapshot.legs` as
- * `{ contract_id: l.leg.contract_id, ratio: l.position.net_quantity }`.
+ * `openStructuresWithLegs[].legs` carry BOTH the structure's fixed template
+ * ratio (`ratio`) and its actual current signed open quantity
+ * (`net_quantity`, from `position.net_quantity`) — two different series get
+ * built from these (see CorrelationContext's field docs): the POSITION
+ * series (from `net_quantity`) for correlation/exposure, and the PER-LOT
+ * series (from `ratio`) for Beta/Hedge Ratio, which must stay independent
+ * of how many lots are currently held (see CorrelationEngine's file
+ * comment). Callers build this from `StructureSnapshot.legs` as
+ * `{ contract_id: l.leg.contract_id, ratio: l.leg.ratio, net_quantity: l.position.net_quantity }`.
  */
 export async function buildCorrelationContext(
-  openStructuresWithLegs: { structure: Structure; legs: { contract_id: UUID; ratio: number }[] }[],
+  openStructuresWithLegs: { structure: Structure; legs: { contract_id: UUID; ratio: number; net_quantity: number }[] }[],
   contracts: Contract[],
   templates: StructureTemplate[],
   instruments: Instrument[],
@@ -85,7 +94,14 @@ export async function buildCorrelationContext(
       neededOutrights.set(c.id, c);
     }
   };
-  for (const { legs } of openStructuresWithLegs) collect(legs);
+  for (const { legs } of openStructuresWithLegs) {
+    // Both weightings can touch different contracts in edge cases (e.g. a
+    // partially-exited leg whose net_quantity is 0 but whose template ratio
+    // isn't) — collect for both so settlement history is never missing for
+    // either series.
+    collect(legs.map((l) => ({ contract_id: l.contract_id, ratio: l.ratio })));
+    collect(legs.map((l) => ({ contract_id: l.contract_id, ratio: l.net_quantity })));
+  }
   collect(extraLegs);
 
   // Also warm every OTHER configured instrument's outright contracts, not
@@ -110,12 +126,33 @@ export async function buildCorrelationContext(
 
   const touchedContractIds = new Set<UUID>();
   const openStructures = openStructuresWithLegs.map(({ structure, legs }) => {
-    const weights = CorrelationEngine.legsToOutrightWeights(legs, contractsById, templatesById, instrumentContractsByInstrument);
-    for (const w of weights) touchedContractIds.add(w.contract_id);
-    return { structure, series: CorrelationEngine.buildSeries(weights, tradingDates, settlements) };
+    const positionWeights = CorrelationEngine.legsToOutrightWeights(
+      legs.map((l) => ({ contract_id: l.contract_id, ratio: l.net_quantity })),
+      contractsById,
+      templatesById,
+      instrumentContractsByInstrument
+    );
+    const templateWeights = CorrelationEngine.legsToOutrightWeights(
+      legs.map((l) => ({ contract_id: l.contract_id, ratio: l.ratio })),
+      contractsById,
+      templatesById,
+      instrumentContractsByInstrument
+    );
+    for (const w of positionWeights) touchedContractIds.add(w.contract_id);
+    for (const w of templateWeights) touchedContractIds.add(w.contract_id);
+
+    const series = CorrelationEngine.buildSeries(positionWeights, tradingDates, settlements);
+    const perLotSeries = CorrelationEngine.buildSeries(templateWeights, tradingDates, settlements);
+
+    const instrument = instrumentsById.get(structure.instrument_id);
+    const dollarPerPriceUnit = instrument ? instrument.tick_value / instrument.tick_size : 1;
+    const positionDollarSeries = series.map((pt) => ({ ...pt, value: pt.value * dollarPerPriceUnit }));
+    const perLotDollarSeries = perLotSeries.map((pt) => ({ ...pt, value: pt.value * dollarPerPriceUnit }));
+
+    return { structure, series, positionDollarSeries, perLotDollarSeries };
   });
   const netExposureByContract = CorrelationEngine.netExposureByContract(
-    openStructuresWithLegs,
+    openStructuresWithLegs.map(({ legs }) => ({ legs: legs.map((l) => ({ contract_id: l.contract_id, ratio: l.net_quantity })) })),
     contractsById,
     templatesById,
     instrumentContractsByInstrument

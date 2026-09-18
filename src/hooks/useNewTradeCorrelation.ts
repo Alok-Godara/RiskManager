@@ -69,14 +69,15 @@ export function useNewTradeCorrelation(
         if (cancelled) return;
         setThresholds({ correlation: settings.correlation, concentration: settings.concentration });
 
-        // Weight each existing leg by its ACTUAL signed open quantity, not
-        // the structure's fixed template ratio — see CorrelationEngine's
-        // file comment. The candidate side (candidateWeights, built in
-        // AddEntryModal) is already scaled by this entry's own direction
-        // and lots, so both sides of the comparison are real exposure.
+        // Each leg carries both its template ratio and its ACTUAL signed
+        // open quantity (buildCorrelationContext needs both — see its file
+        // comment). Correlation itself still uses net_quantity; the
+        // candidate side (candidateWeights, built in AddEntryModal) is
+        // already scaled by this entry's own direction and lots, so both
+        // sides of the comparison are real exposure.
         const withLegs = openStructures.map((s) => ({
           structure: s.structure,
-          legs: s.legs.map((l) => ({ contract_id: l.leg.contract_id, ratio: l.position.net_quantity })),
+          legs: s.legs.map((l) => ({ contract_id: l.leg.contract_id, ratio: l.leg.ratio, net_quantity: l.position.net_quantity })),
         }));
         const context = await buildCorrelationContext(
           withLegs,

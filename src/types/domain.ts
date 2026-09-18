@@ -430,11 +430,14 @@ export interface PortfolioConcentrationAnalysis {
   window: CorrelationWindow;
   pairs: StructurePairCorrelation[];
   highCorrelationPairs: StructurePairCorrelation[]; // subset of `pairs` over the warning threshold
-  // Risk-weighted fraction of pairwise exposure that's mutually
-  // reinforcing (positively correlated) rather than offsetting — see
+  // netDollarRisk / grossDollarRisk — the book's actual combined $
+  // volatility vs. what it would be with nothing offsetting anything. See
   // CorrelationEngine.analyzePortfolioConcentration for the exact formula.
   sameDirectionRiskFraction?: number;
+  // The two raw $ figures behind sameDirectionRiskFraction, for display.
+  grossDollarRisk?: number;
+  netDollarRisk?: number;
   isConcentrated: boolean;
-  drivingPairs: StructurePairCorrelation[]; // top contributors to sameDirectionRiskFraction
+  drivingPairs: StructurePairCorrelation[]; // top same-direction-correlated pairs (diagnostic only, doesn't feed sameDirectionRiskFraction)
   warnings: string[];
 }
