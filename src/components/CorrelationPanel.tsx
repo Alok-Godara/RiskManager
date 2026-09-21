@@ -5,6 +5,9 @@ import { CorrelationEngine, type DailySeriesPoint } from "../engines/Correlation
 import { usePortfolioCorrelation } from "../hooks/usePortfolioCorrelation";
 import { sortContractsChronologically } from "../utils/contractGen";
 import { fmtMoney } from "../utils/format";
+import { fmtQh } from "../utils/correlationFormat";
+import { InfoTip } from "./InfoTip";
+import { PortfolioRead } from "./PortfolioRead";
 
 const ZERO_EXPOSURE_EPSILON = 1e-6;
 /** Combined vol within +/-5% of the naive gross sum reads as "Neutral" rather than flip-flopping between Reducing/Increasing on noise. */
@@ -27,10 +30,13 @@ function lotsClass(n: number | undefined): string {
 }
 
 /** A single labeled metric block, styled like a compact stat-card but tolerant of multi-line content. */
-function MiniStat({ label, children }: { label: string; children: ReactNode }) {
+function MiniStat({ label, tip, tipAlign, children }: { label: string; tip?: ReactNode; tipAlign?: "left" | "right"; children: ReactNode }) {
   return (
     <div className="stat-card">
-      <div className="stat-label">{label}</div>
+      <div className="stat-label">
+        {label}
+        {tip && <InfoTip align={tipAlign}>{tip}</InfoTip>}
+      </div>
       <div style={{ fontSize: "0.85rem", lineHeight: 1.6, fontVariantNumeric: "tabular-nums" }}>{children}</div>
     </div>
   );
@@ -46,6 +52,8 @@ interface PairDetail {
   combinedVol?: number;
   grossVol: number;
   riskImpact?: "Reducing" | "Increasing" | "Neutral";
+  /** Correlation of the two structures' SHAPES (per-lot, direction-independent) — decides whether a hedge ratio is worth showing. */
+  shapeCorr?: number;
 }
 
 function computePairDetail(
@@ -53,7 +61,8 @@ function computePairDetail(
   snapshotsById: Map<string, StructureSnapshot>,
   perLotDollarSeriesByStructureId: Record<string, DailySeriesPoint[]>,
   positionDollarSeriesByStructureId: Record<string, DailySeriesPoint[]>,
-  actualDays: number
+  actualDays: number,
+  window: CorrelationWindow
 ): PairDetail {
   const snapA = snapshotsById.get(p.structure_a_id);
   const snapB = snapshotsById.get(p.structure_b_id);
@@ -64,6 +73,8 @@ function computePairDetail(
 
   const betaAonB = perLotA && perLotB ? CorrelationEngine.regressionBeta(perLotA, perLotB, actualDays).beta : undefined;
   const betaBonA = perLotA && perLotB ? CorrelationEngine.regressionBeta(perLotB, perLotA, actualDays).beta : undefined;
+
+  const shapeCorr = perLotA && perLotB ? CorrelationEngine.rollingCorrelation(perLotA, perLotB, actualDays, window).correlation : undefined;
 
   const netA = snapA ? CorrelationEngine.structureNetLotsSigned(snapA.legs) : undefined;
   const netB = snapB ? CorrelationEngine.structureNetLotsSigned(snapB.legs) : undefined;
@@ -79,7 +90,7 @@ function computePairDetail(
     riskImpact = ratio < 1 - RISK_IMPACT_TOLERANCE ? "Reducing" : ratio > 1 + RISK_IMPACT_TOLERANCE ? "Increasing" : "Neutral";
   }
 
-  return { betaAonB, betaBonA, netA, netB, volA, volB, combinedVol, grossVol, riskImpact };
+  return { betaAonB, betaBonA, netA, netB, volA, volB, combinedVol, grossVol, riskImpact, shapeCorr };
 }
 
 /** Tiny dependency-free sparkline for a rolling-correlation trend — no charting library for ~30 points. */
@@ -111,7 +122,8 @@ export function CorrelationPanel({
   templates: StructureTemplate[];
   instruments: Instrument[];
 }) {
-  const [window, setWindow] = useState<CorrelationWindow>(15);
+  const [window, setWindow] = useState<CorrelationWindow>(60);
+  const [showMore, setShowMore] = useState(false);
   const {
     loading,
     error,
@@ -119,6 +131,7 @@ export function CorrelationPanel({
     seriesByStructureId,
     perLotDollarSeriesByStructureId,
     positionDollarSeriesByStructureId,
+    outrightWeightsByStructureId,
     thresholds,
     periods,
     rollingWindows,
@@ -130,6 +143,23 @@ export function CorrelationPanel({
 
   const analysis = analysesByWindow?.[window];
   const snapshotsById = useMemo(() => new Map(snapshots.map((s) => [s.structure.id, s])), [snapshots]);
+  const openSnapshots = useMemo(() => snapshots.filter((s) => s.structure.status !== "Fully Closed"), [snapshots]);
+  const instrumentSymbolById = useMemo(() => new Map(instruments.map((i) => [i.id, i.symbol])), [instruments]);
+  const contractsById = useMemo(() => new Map(contracts.map((c) => [c.id, c])), [contracts]);
+
+  /** "Jun27 +2, Jul27 -6, Aug27 +6, Sep27 -2" — a structure's current position as outright weights, chronological (what to enter as a custom structure in QuantHub; only the signs and ratios matter, not the scale). */
+  function fmtWeights(weights: { contract_id: string; ratio: number }[] | undefined): string {
+    if (!weights || weights.length === 0) return "—";
+    const cs = sortContractsChronologically(weights.map((w) => contractsById.get(w.contract_id)).filter((c): c is Contract => Boolean(c)));
+    const byId = new Map(weights.map((w) => [w.contract_id, w.ratio]));
+    return cs
+      .filter((c) => Math.abs(byId.get(c.id) ?? 0) > 1e-9)
+      .map((c) => {
+        const r = byId.get(c.id) ?? 0;
+        return c.month_label + " " + (r > 0 ? "+" : "") + String(Number(r.toFixed(2)));
+      })
+      .join(", ");
+  }
 
   // Grouped by instrument (alphabetical), each instrument's own contracts
   // chronological — the direct "do these positions actually net out" view,
@@ -172,10 +202,24 @@ export function CorrelationPanel({
       })
     : [];
 
+  const firstPair = sortedPairs[0];
+  const windowDates = (w: (typeof CORRELATION_WINDOWS)[number]) => {
+    const wc = firstPair?.windows.find((x) => x.window === w);
+    return wc?.start_date ? wc.start_date + " → " + wc.end_date + " (" + wc.observations + " trading days)" : "no data";
+  };
+
   return (
     <div className="panel">
       <div className="panel-header">
-        <h2>Correlation &amp; Concentration</h2>
+        <h2>
+          Correlation &amp; Concentration
+          <InfoTip>
+            Correlation here is measured like QuantHub's Correlation &amp; Hedging tool: Pearson correlation of the structures'
+            settlement prices on the same dates, from −100 to 100, using your actual Long/Short lots. {window}d = the last{" "}
+            {periods[window]} trading days; the trend line uses a sliding {rollingWindows[window]}-day sub-window. Windows are
+            configurable in Settings → Correlation &amp; Concentration.
+          </InfoTip>
+        </h2>
         <div className="button-row">
           <div className="segmented">
             {CORRELATION_WINDOWS.map((w) => (
@@ -189,27 +233,27 @@ export function CorrelationPanel({
           </button>
         </div>
       </div>
-      <p className="helper-text">
-        {window}d column: period {periods[window]} trading day(s), rolling window {rollingWindows[window]} day(s) — configurable in
-        Settings → Correlation &amp; Concentration.
-      </p>
 
       {error && <p className="helper-text" style={{ color: "var(--red)" }}>{error}</p>}
 
       {exposureRows.length > 0 && (
         <>
-          <h4>Net Portfolio Exposure — Actual Lots Held, Aggregated Across All Open Structures</h4>
-          <p className="helper-text">
-            Every outright contract any open structure touches, netted (signed) across the whole book — the direct
-            "do these positions actually offset" view. A contract at 0 here is fully hedged even if individual
-            structures each carry nonzero exposure on it.
-          </p>
+          <h4>
+            Net Portfolio Exposure
+            <InfoTip>
+              Every outright delivery month your open structures touch, with your positions added up across the whole book
+              (Long +, Short −). A month at 0 is fully hedged, even if individual structures each hold something in it.
+            </InfoTip>
+          </h4>
           <table className="data-table compact">
             <thead>
               <tr>
                 <th>Instrument</th>
                 <th>Contract</th>
-                <th>Net Lots</th>
+                <th>
+                  Net Lots
+                  <InfoTip>Total lots you hold in this delivery month across all structures. + = Long, − = Short.</InfoTip>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -218,9 +262,7 @@ export function CorrelationPanel({
                   <td>{instrumentSymbol}</td>
                   <td>{contract.month_label}</td>
                   <td className={Math.abs(net) < ZERO_EXPOSURE_EPSILON ? "muted" : net > 0 ? "pnl-pos" : "pnl-neg"}>
-                    {Math.abs(net) < ZERO_EXPOSURE_EPSILON
-                      ? "0 (hedged)"
-                      : `${net > 0 ? "+" : ""}${net.toFixed(2)}`}
+                    {Math.abs(net) < ZERO_EXPOSURE_EPSILON ? "0 (hedged)" : `${net > 0 ? "+" : ""}${net.toFixed(2)}`}
                   </td>
                 </tr>
               ))}
@@ -230,16 +272,23 @@ export function CorrelationPanel({
       )}
 
       {openStructureCount < 2 && !loading && (
-        <p className="helper-text">Open at least 2 structures to see pairwise correlation analysis.</p>
+        <p className="helper-text">Open at least 2 structures to see pairwise correlation.</p>
       )}
 
-      {loading && !analysis && <p className="helper-text">Fetching settlement history and computing correlations…</p>}
+      {loading && !analysis && <p className="helper-text">Computing correlations…</p>}
 
       {analysis && openStructureCount >= 2 && (
         <>
           <div className="card-grid">
             <div className="stat-card">
-              <div className="stat-label">Same-Direction Risk ({window}d)</div>
+              <div className="stat-label">
+                Same-Direction Risk ({window}d)
+                <InfoTip>
+                  The book's actual daily $ swing ÷ the sum of each position's own swing. 0% = fully hedged, 100% = no
+                  benefit from holding them together. Careful: even completely unrelated positions read well above 0% (about
+                  71–75% for two positions), so use the Portfolio Read below rather than treating the {(thresholds.concentration * 100).toFixed(0)}% warning line as a hard rule.
+                </InfoTip>
+              </div>
               <div
                 className={`stat-value ${
                   analysis.isConcentrated ? "pnl-neg" : analysis.sameDirectionRiskFraction !== undefined ? "pnl-pos" : ""
@@ -247,65 +296,104 @@ export function CorrelationPanel({
               >
                 {analysis.sameDirectionRiskFraction !== undefined ? `${(analysis.sameDirectionRiskFraction * 100).toFixed(0)}%` : "—"}
               </div>
-              <div className="stat-sub">
-                Net $ volatility of the whole book ÷ gross (undiversified) $ volatility if nothing offset anything — 0% = fully
-                hedged, 100% = no diversification benefit. Warns at {(thresholds.concentration * 100).toFixed(0)}%.
-              </div>
             </div>
             <div className="stat-card">
-              <div className="stat-label">Status</div>
+              <div className="stat-label">
+                Status
+                <InfoTip>
+                  "Concentrated" appears when Same-Direction Risk is at or above the warning line in Settings — a quick flag
+                  only. {analysis.pairs.length} pair(s) analyzed at this window.
+                  {analysis.warnings.map((w, i) => (
+                    <span key={i} style={{ display: "block", marginTop: 6, color: "var(--amber)" }}>
+                      ⚠ {w}
+                    </span>
+                  ))}
+                </InfoTip>
+              </div>
               <div className={`stat-value ${analysis.isConcentrated ? "pnl-neg" : "pnl-pos"}`}>
                 {analysis.isConcentrated ? "Concentrated" : "Diversified"}
               </div>
-              <div className="stat-sub">{analysis.pairs.length} structure pair(s) analyzed at this window</div>
             </div>
             <div className="stat-card">
-              <div className="stat-label">High-Correlation Pairs</div>
+              <div className="stat-label">
+                High-Correlation Pairs
+                <InfoTip>
+                  How many pairs of your structures have a correlation of at least {thresholds.correlation.toFixed(2)} in size
+                  (either direction) at this window. Zero means none move strongly together or strongly opposite.
+                </InfoTip>
+              </div>
               <div className="stat-value">{analysis.highCorrelationPairs.length}</div>
-              <div className="stat-sub">|correlation| ≥ {thresholds.correlation.toFixed(2)}</div>
             </div>
             <div className="stat-card">
-              <div className="stat-label">Gross $ Risk ({window}d)</div>
+              <div className="stat-label">
+                Gross $ Risk ({window}d)
+                <InfoTip>
+                  Each open position's own typical daily $ swing (at your current lots), simply added together — what the book
+                  would swing if every position moved the same way at once.
+                </InfoTip>
+              </div>
               <div className="stat-value">{analysis.grossDollarRisk !== undefined ? fmtMoney(analysis.grossDollarRisk) : "—"}</div>
-              <div className="stat-sub">Sum of each open position's own $ volatility, as if nothing offset anything</div>
             </div>
             <div className="stat-card">
-              <div className="stat-label">Net $ Risk ({window}d)</div>
+              <div className="stat-label">
+                Net $ Risk ({window}d)
+                <InfoTip align="right">
+                  The book's ACTUAL typical daily $ swing with all positions held together. Lower than Gross means positions
+                  partly offset or move independently.
+                </InfoTip>
+              </div>
               <div className="stat-value">{analysis.netDollarRisk !== undefined ? fmtMoney(analysis.netDollarRisk) : "—"}</div>
-              <div className="stat-sub">The whole book's ACTUAL combined $ volatility, held together right now</div>
             </div>
           </div>
 
-          {analysis.warnings.length > 0 && (
-            <div className="card-grid" style={{ gridTemplateColumns: "1fr" }}>
-              {analysis.warnings.map((w, i) => (
-                <p key={i} className="helper-text" style={{ color: "var(--amber)" }}>
-                  ⚠ {w}
-                </p>
-              ))}
-            </div>
-          )}
-
-          <h4>Pairwise Correlations ({window}d) — highest correlation first</h4>
-          <p className="helper-text">
-            Direction-aware: reflects your ACTUAL current Long/Short positions, so two structures with the same shape can show
-            opposite-signed correlation depending on which way each is currently held.
-          </p>
+          <h4>
+            Pairwise Correlations ({window}d)
+            <InfoTip>
+              The same number QuantHub shows: correlation of the two structures' settlement prices on the same dates, from −100
+              to 100 (57 = 0.57), using your actual Long/Short lots — a Short flips the sign. +100 = your two positions win and
+              lose together; −100 = one's gains exactly cancel the other's losses; near 0 = unrelated.
+            </InfoTip>
+          </h4>
           <table className="data-table compact">
             <thead>
               <tr>
                 <th>Structure A</th>
                 <th>Structure B</th>
-                <th>5d</th>
-                <th>15d</th>
-                <th>30d</th>
-                <th>Trend ({window}d)</th>
+                {CORRELATION_WINDOWS.map((w) => (
+                  <th key={w}>
+                    {w}d
+                    <InfoTip>
+                      Correlation over the last {periods[w]} trading days: {windowDates(w)}. Enter these as Start/End in QuantHub
+                      to reproduce it. Shorter windows show the recent relationship, longer ones the steadier one.
+                    </InfoTip>
+                  </th>
+                ))}
+                <th>
+                  Beta (A : B)
+                  <InfoTip>
+                    For 1 lot of A, buy this many lots of B to offset it (a negative number means sell B instead). Worked out from
+                    how the two structures themselves move over the last {periods[window]} trading days, so it doesn't change with
+                    your Long/Short choice. If the two barely move together (shown dimmed) it isn't a reliable hedge.
+                  </InfoTip>
+                </th>
+                <th>
+                  Trend
+                  <InfoTip align="right">
+                    The same correlation recalculated over a sliding {rollingWindows[window]}-day sub-window across the last{" "}
+                    {periods[window]} days. Rising = the two positions are becoming more alike; falling = more opposite.
+                  </InfoTip>
+                </th>
               </tr>
             </thead>
             <tbody>
               {sortedPairs.map((p) => {
                 const seriesA = seriesByStructureId[p.structure_a_id];
                 const seriesB = seriesByStructureId[p.structure_b_id];
+                const perLotA = perLotDollarSeriesByStructureId[p.structure_a_id];
+                const perLotB = perLotDollarSeriesByStructureId[p.structure_b_id];
+                const betaAonB = perLotA && perLotB ? CorrelationEngine.regressionBeta(perLotA, perLotB, periods[window]).beta : undefined;
+                const shapeCorr = perLotA && perLotB ? CorrelationEngine.rollingCorrelation(perLotA, perLotB, periods[window], window).correlation : undefined;
+                const lotsOfB = betaAonB !== undefined ? -betaAonB : undefined;
                 const trend =
                   seriesA && seriesB
                     ? CorrelationEngine.rollingCorrelationTrend(seriesA, seriesB, periods[window], rollingWindows[window])
@@ -318,10 +406,13 @@ export function CorrelationPanel({
                       const wc = p.windows.find((x) => x.window === w);
                       return (
                         <td key={w} className={correlationClass(wc?.correlation, thresholds.correlation)}>
-                          {wc?.correlation !== undefined ? wc.correlation.toFixed(2) : "—"}
+                          {fmtQh(wc?.correlation)}
                         </td>
                       );
                     })}
+                    <td className={shapeCorr !== undefined && Math.abs(shapeCorr) >= 0.3 ? "" : "muted"}>
+                      {lotsOfB !== undefined ? "1 : " + (Math.abs(lotsOfB) < 0.005 ? "0" : lotsOfB.toFixed(2)) : "—"}
+                    </td>
                     <td>
                       <Sparkline points={trend} />
                     </td>
@@ -330,7 +421,7 @@ export function CorrelationPanel({
               })}
               {sortedPairs.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="muted">
+                  <td colSpan={7} className="muted">
                     No structure pairs to compare yet.
                   </td>
                 </tr>
@@ -338,89 +429,137 @@ export function CorrelationPanel({
             </tbody>
           </table>
 
-          {sortedPairs.length > 0 && (
+          <div style={{ margin: "16px 0 8px" }}>
+            <button
+              type="button"
+              className="secondary"
+              style={{ marginBottom: 0 }}
+              onClick={() => setShowMore((v) => !v)}
+              aria-expanded={showMore}
+            >
+              {showMore ? "▾" : "▸"} More details
+            </button>
+          </div>
+
+          {showMore && (
             <>
-              <h4>Pair Details ({window}d)</h4>
-              <p className="helper-text">
-                Three separate questions per pair: do they move together (correlation, above — direction-aware, YOUR current
-                positions), how much does one move relative to the other (regression/beta — shape-only, independent of which
-                way you're currently holding either one), and what lot ratio would actually hedge that (hedge ratio). Beta and
-                correlation can legitimately have opposite signs when one leg is held Short: correlation tells you how your
-                actual positions behave together; beta tells you how the structures themselves behave, regardless of
-                direction — exactly the "4th front vs. 8th front" kind of structural fact that shouldn't change just because
-                you flipped from Long to Short.
-              </p>
-              <div style={{ display: "flex", flexDirection: "column", gap: 12, margin: "12px 0 18px" }}>
-                {sortedPairs.map((p) => {
-                  const wc = p.windows.find((x) => x.window === window);
-                  const d = computePairDetail(p, snapshotsById, perLotDollarSeriesByStructureId, positionDollarSeriesByStructureId, periods[window]);
-                  const hedgeMagnitude = d.betaAonB !== undefined ? Math.abs(d.betaAonB) : undefined;
-                  const hedgeSameDirection = d.betaAonB !== undefined ? d.betaAonB < 0 : undefined;
-                  return (
-                    <div
-                      key={`${p.structure_a_id}-${p.structure_b_id}-detail`}
-                      style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 16 }}
-                    >
-                      <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                        {p.structure_a_name} vs {p.structure_b_name}
-                        <span className={`${correlationClass(wc?.correlation, thresholds.correlation)}`} style={{ marginLeft: 10, fontWeight: 700 }}>
-                          {wc?.correlation !== undefined ? `${wc.correlation.toFixed(2)} correlation (${window}d)` : "insufficient data"}
-                        </span>
-                      </div>
-                      <div className="card-grid" style={{ margin: "10px 0 0" }}>
-                        <MiniStat label="Net Position">
-                          <div className={lotsClass(d.netA)}>
-                            {p.structure_a_name}: {fmtLots(d.netA)} lots
+              <PortfolioRead
+                window={window}
+                actualDays={periods[window]}
+                openSnapshots={openSnapshots}
+                positionDollarSeriesByStructureId={positionDollarSeriesByStructureId}
+                analysis={analysis}
+                concentrationThreshold={thresholds.concentration}
+                instrumentSymbolById={instrumentSymbolById}
+              />
+
+              {sortedPairs.length > 0 && (
+                <>
+                  <h4>
+                    Pair Details ({window}d)
+                    <InfoTip>
+                      One card per pair, answering three separate questions: do they move together (correlation), how much does one
+                      move for each move in the other (beta), and what lot ratio would hedge that. Correlation uses your actual
+                      Long/Short lots; beta and hedge ratio look at the structures themselves, so they can have opposite signs when
+                      one of them is held Short.
+                    </InfoTip>
+                  </h4>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12, margin: "12px 0 18px" }}>
+                    {sortedPairs.map((p) => {
+                      const wc = p.windows.find((x) => x.window === window);
+                      const d = computePairDetail(p, snapshotsById, perLotDollarSeriesByStructureId, positionDollarSeriesByStructureId, periods[window], window);
+                      const hedgeMagnitude = d.betaAonB !== undefined ? Math.abs(d.betaAonB) : undefined;
+                      const hedgeSameDirection = d.betaAonB !== undefined ? d.betaAonB < 0 : undefined;
+                      const hedgeUseful = d.shapeCorr !== undefined && Math.abs(d.shapeCorr) >= 0.3;
+                      return (
+                        <div
+                          key={`${p.structure_a_id}-${p.structure_b_id}-detail`}
+                          style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 16 }}
+                        >
+                          <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                            {p.structure_a_name} vs {p.structure_b_name}
+                            <span className={correlationClass(wc?.correlation, thresholds.correlation)} style={{ marginLeft: 10, fontWeight: 700 }}>
+                              {wc?.correlation !== undefined ? `correlation ${fmtQh(wc.correlation)}` : "insufficient data"}
+                            </span>
                           </div>
-                          <div className={lotsClass(d.netB)}>
-                            {p.structure_b_name}: {fmtLots(d.netB)} lots
+                          <div className="card-grid" style={{ margin: "10px 0 0" }}>
+                            <MiniStat label="Net Position" tip="Your current position in each structure, in structure lots: + = Long, − = Short.">
+                              <div className={lotsClass(d.netA)}>
+                                {p.structure_a_name}: {fmtLots(d.netA)}
+                              </div>
+                              <div className={lotsClass(d.netB)}>
+                                {p.structure_b_name}: {fmtLots(d.netB)}
+                              </div>
+                            </MiniStat>
+                            <MiniStat
+                              label="Beta"
+                              tip="How many units the first structure moves for each 1 unit move in the second (and the reverse), measured on the structures themselves, not on your Long/Short choice. Near 0 means one barely reacts to the other."
+                            >
+                              <div>A per 1 B: {d.betaAonB !== undefined ? d.betaAonB.toFixed(2) : "—"}</div>
+                              <div>B per 1 A: {d.betaBonA !== undefined ? d.betaBonA.toFixed(2) : "—"}</div>
+                            </MiniStat>
+                            <MiniStat
+                              label="Hedge Ratio"
+                              tip={
+                                "Roughly how many lots of B offset 1 lot of A, from the beta. Only meaningful when the two structures are clearly related" +
+                                (d.shapeCorr !== undefined ? " (their shape correlation is " + fmtQh(d.shapeCorr) + "; a hedge is shown at 30 or more in size)" : "") +
+                                "; otherwise there is nothing to hedge with."
+                              }
+                            >
+                              {hedgeUseful ? (
+                                <>
+                                  <div>1 : {hedgeMagnitude !== undefined ? hedgeMagnitude.toFixed(2) : "—"} (A : B)</div>
+                                  <div className="helper-text">
+                                    {hedgeSameDirection === undefined ? "—" : hedgeSameDirection ? "B in the SAME direction as A" : "B OPPOSITE to A"}
+                                  </div>
+                                </>
+                              ) : (
+                                <div className="muted">No useful hedge</div>
+                              )}
+                            </MiniStat>
+                            <MiniStat
+                              label="Daily $ Swing"
+                              tip="Typical daily dollar swing of each position at your current lots, and of the two held together. Combined below the sum means they partly offset or move independently."
+                            >
+                              <div>
+                                {p.structure_a_name}: {d.volA !== undefined ? fmtMoney(d.volA) : "—"}
+                              </div>
+                              <div>
+                                {p.structure_b_name}: {d.volB !== undefined ? fmtMoney(d.volB) : "—"}
+                              </div>
+                              <div style={{ fontWeight: 700 }}>Together: {d.combinedVol !== undefined ? fmtMoney(d.combinedVol) : "—"}</div>
+                            </MiniStat>
+                            <MiniStat
+                              label="Risk Impact"
+                              tip={
+                                "Whether holding the two together swings less (Reducing), about the same (Neutral) or more (Increasing) than adding their separate swings (" +
+                                fmtMoney(d.grossVol) +
+                                "). Reducing can just mean two unrelated bets diversify, not that they hedge."
+                              }
+                            >
+                              <div
+                                className={d.riskImpact === "Reducing" ? "pnl-pos" : d.riskImpact === "Increasing" ? "pnl-neg" : "muted"}
+                                style={{ fontWeight: 700 }}
+                              >
+                                {d.riskImpact ?? "—"}
+                              </div>
+                            </MiniStat>
+                            <MiniStat
+                              label="Check in QuantHub"
+                              tipAlign="right"
+                              tip="To reproduce this correlation in QuantHub's Correlation & Hedging tool: set Start/End to these dates, then enter Y and X as custom structures with these month weights (your current positions; only the signs and ratios matter, not the scale)."
+                            >
+                              <div>{wc?.start_date ? wc.start_date + " → " + wc.end_date : "—"}</div>
+                              <div className="helper-text">Y: {fmtWeights(outrightWeightsByStructureId[p.structure_a_id])}</div>
+                              <div className="helper-text">X: {fmtWeights(outrightWeightsByStructureId[p.structure_b_id])}</div>
+                            </MiniStat>
                           </div>
-                        </MiniStat>
-                        <MiniStat label="Regression / Beta (shape-based)">
-                          <div>A per 1 B: {d.betaAonB !== undefined ? d.betaAonB.toFixed(2) : "—"}</div>
-                          <div>B per 1 A: {d.betaBonA !== undefined ? d.betaBonA.toFixed(2) : "—"}</div>
-                        </MiniStat>
-                        <MiniStat label="Hedge Ratio (shape-based)">
-                          <div>
-                            1 : {hedgeMagnitude !== undefined ? hedgeMagnitude.toFixed(2) : "—"} (A : B)
-                          </div>
-                          <div className="helper-text" style={{ marginTop: 2 }}>
-                            {hedgeSameDirection === undefined
-                              ? "—"
-                              : hedgeSameDirection
-                                ? "hold B in the SAME direction as A"
-                                : "hold B OPPOSITE to A"}
-                          </div>
-                        </MiniStat>
-                        <MiniStat label="Position-Adjusted Exposure">
-                          <div>
-                            {p.structure_a_name}: {d.volA !== undefined ? fmtMoney(d.volA) : "—"}
-                          </div>
-                          <div>
-                            {p.structure_b_name}: {d.volB !== undefined ? fmtMoney(d.volB) : "—"}
-                          </div>
-                          <div style={{ fontWeight: 700, marginTop: 2 }}>
-                            Combined (actual): {d.combinedVol !== undefined ? fmtMoney(d.combinedVol) : "—"}
-                          </div>
-                        </MiniStat>
-                        <MiniStat label="Risk Impact">
-                          <div
-                            className={
-                              d.riskImpact === "Reducing" ? "pnl-pos" : d.riskImpact === "Increasing" ? "pnl-neg" : "muted"
-                            }
-                            style={{ fontWeight: 700 }}
-                          >
-                            {d.riskImpact ?? "—"}
-                          </div>
-                          <div className="helper-text" style={{ marginTop: 2 }}>
-                            vs. {fmtMoney(d.grossVol)} gross if held independently
-                          </div>
-                        </MiniStat>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </>
           )}
         </>

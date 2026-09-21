@@ -17,6 +17,8 @@ export interface PortfolioCorrelationState {
   perLotDollarSeriesByStructureId: Record<UUID, DailySeriesPoint[]>;
   /** Position-weighted (net_quantity) $ series per structure — for $ volatility / risk-impact math (CorrelationEngine.dollarVolatility). */
   positionDollarSeriesByStructureId: Record<UUID, DailySeriesPoint[]>;
+  /** Each open structure's current position as signed outright-month weights (net lots per contract). */
+  outrightWeightsByStructureId: Record<UUID, { contract_id: UUID; ratio: number }[]>;
   thresholds: { correlation: number; concentration: number };
   periods: Record<CorrelationWindow, number>;
   rollingWindows: Record<CorrelationWindow, number>;
@@ -52,9 +54,10 @@ export function usePortfolioCorrelation(
   const [seriesByStructureId, setSeriesByStructureId] = useState<Record<UUID, DailySeriesPoint[]>>({});
   const [perLotDollarSeriesByStructureId, setPerLotDollarSeriesByStructureId] = useState<Record<UUID, DailySeriesPoint[]>>({});
   const [positionDollarSeriesByStructureId, setPositionDollarSeriesByStructureId] = useState<Record<UUID, DailySeriesPoint[]>>({});
+  const [outrightWeightsByStructureId, setOutrightWeightsByStructureId] = useState<Record<UUID, { contract_id: UUID; ratio: number }[]>>({});
   const [thresholds, setThresholds] = useState({ correlation: 0.7, concentration: 0.65 });
-  const [periods, setPeriods] = useState<Record<CorrelationWindow, number>>({ 5: 5, 15: 15, 30: 30 });
-  const [rollingWindows, setRollingWindows] = useState<Record<CorrelationWindow, number>>({ 5: 5, 15: 5, 30: 7 });
+  const [periods, setPeriods] = useState<Record<CorrelationWindow, number>>({ 30: 30, 60: 60, 90: 90 });
+  const [rollingWindows, setRollingWindows] = useState<Record<CorrelationWindow, number>>({ 30: 10, 60: 20, 90: 30 });
   const [netExposureByContract, setNetExposureByContract] = useState<Record<UUID, number>>({});
   const [touchedContractIds, setTouchedContractIds] = useState<UUID[]>([]);
   const [nonce, setNonce] = useState(0);
@@ -124,6 +127,7 @@ export function usePortfolioCorrelation(
         setSeriesByStructureId(Object.fromEntries(context.openStructures.map((s) => [s.structure.id, s.series])));
         setPerLotDollarSeriesByStructureId(Object.fromEntries(context.openStructures.map((s) => [s.structure.id, s.perLotDollarSeries])));
         setPositionDollarSeriesByStructureId(Object.fromEntries(context.openStructures.map((s) => [s.structure.id, s.positionDollarSeries])));
+        setOutrightWeightsByStructureId(Object.fromEntries(context.openStructures.map((s) => [s.structure.id, s.outrightWeights])));
         setNetExposureByContract(Object.fromEntries(context.netExposureByContract));
         setTouchedContractIds(Array.from(context.touchedContractIds));
       } catch (err) {
@@ -150,6 +154,7 @@ export function usePortfolioCorrelation(
     seriesByStructureId,
     perLotDollarSeriesByStructureId,
     positionDollarSeriesByStructureId,
+    outrightWeightsByStructureId,
     thresholds,
     periods,
     rollingWindows,

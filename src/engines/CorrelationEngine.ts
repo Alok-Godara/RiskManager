@@ -31,9 +31,11 @@ export interface StructureWithLegs {
 
 /**
  * CorrelationEngine: builds each structure's historical daily EXPOSURE value
- * series from settlement prices (never live/intraday quotes — this is a
- * day-over-day co-movement read), and computes rolling Pearson correlations
- * between them.
+ * series from settlement prices (never live/intraday quotes), and computes
+ * Pearson correlation / regression between them on price LEVELS over common
+ * trading days — the same method as QuantHub's Correlation & Hedging tool.
+ * (Day-over-day CHANGES are still used, deliberately, for the dollar
+ * volatility / net-vs-gross risk math below, which is about daily P&L.)
  *
  * A structure's "value" on a given day is sum(weight_i * outright_settle_i),
  * where `weight_i` is that leg's ACTUAL SIGNED OPEN QUANTITY (Position.net_
@@ -55,8 +57,8 @@ export interface StructureWithLegs {
  * reconstruction — exactly how InstrumentEngine does it for the
  * true-exposure view, and for the same reason: settlements exist per
  * outright contract, not per user-defined structure shape. Because the
- * weights are now real signed exposure, correlating these day-over-day
- * diffs is directly a "do these two positions' P&L move together" read:
+ * weights are now real signed exposure, correlating these series is
+ * directly a "do these two positions move together" read:
  * positive = gain/lose together (concentrating), negative = offsetting
  * (diversifying) — see netExposureByContract below for the complementary,
  * correlation-free view of the same thing (net lots actually held per
@@ -117,21 +119,6 @@ export class CorrelationEngine {
     }
     const merged = new Map<UUID, number>();
     for (const w of raw) merged.set(w.contract_id, (merged.get(w.contract_id) ?? 0) + w.ratio);
-    return Array.from(merged.entries()).map(([contract_id, ratio]) => ({ contract_id, ratio }));
-  }
-
-  /**
-   * Merges multiple {contract_id, ratio} weight arrays by summing ratio per
-   * contract_id — e.g. combining a structure's EXISTING held position with
-   * an incremental new entry's own weights, so the result reflects "what
-   * this structure's net position becomes after this entry," not the entry
-   * in isolation (see AddEntryModal.tsx's candidateWeights).
-   */
-  static sumWeights(weightLists: LegWeight[][]): LegWeight[] {
-    const merged = new Map<UUID, number>();
-    for (const weights of weightLists) {
-      for (const w of weights) merged.set(w.contract_id, (merged.get(w.contract_id) ?? 0) + w.ratio);
-    }
     return Array.from(merged.entries()).map(([contract_id, ratio]) => ({ contract_id, ratio }));
   }
 
@@ -282,13 +269,29 @@ export class CorrelationEngine {
   }
 
   /**
-   * Correlate two series' daily diffs over the most recent `actualDays`
-   * observations common to both (aligned by date) — the CURRENT snapshot
-   * (today's value), used for verdicts/warnings/thresholds. `label` is the
-   * 5d/15d/30d column this result is filed under for display; `actualDays`
-   * is the real day-count behind that label (Settings -> Correlation &
-   * Concentration lets it differ from the label, e.g. a "15d" column
-   * configured to actually use 20 days).
+   * The two series' price LEVELS on dates present in BOTH (Quantum's "AND
+   * condition on the same dates"), oldest..newest, trimmed to the most
+   * recent `actualDays` such dates. Correlation/beta are computed on these
+   * levels — not day-over-day changes — to match QuantHub's
+   * Correlation & Hedging tool, which correlates the structures' settlement
+   * price data directly (reproduced exactly against its output, 2026-09).
+   */
+  private static alignedLevels(
+    seriesA: DailySeriesPoint[],
+    seriesB: DailySeriesPoint[],
+    actualDays: number
+  ): { dates: string[]; a: number[]; b: number[] } {
+    const mapB = new Map(seriesB.map((p) => [p.date, p.value]));
+    const common = seriesA.filter((p) => mapB.has(p.date)).sort((x, y) => x.date.localeCompare(y.date)).slice(-actualDays);
+    return { dates: common.map((p) => p.date), a: common.map((p) => p.value), b: common.map((p) => mapB.get(p.date)!) };
+  }
+
+  /**
+   * Pearson correlation of two series' price levels over the most recent
+   * `actualDays` trading days common to both — the CURRENT snapshot (today's
+   * value), used for verdicts/warnings/thresholds. `label` is the 30d/60d/90d
+   * column this result is filed under; `actualDays` is the real day-count
+   * behind it (Settings -> Correlation & Concentration can change it).
    */
   static rollingCorrelation(
     seriesA: DailySeriesPoint[],
@@ -296,40 +299,27 @@ export class CorrelationEngine {
     actualDays: number,
     label: CorrelationWindow
   ): WindowCorrelation {
-    const diffsA = this.seriesDiffs(seriesA);
-    const diffsB = this.seriesDiffs(seriesB);
-    const commonDates = Array.from(diffsA.keys())
-      .filter((d) => diffsB.has(d))
-      .sort()
-      .slice(-actualDays);
-    const a = commonDates.map((d) => diffsA.get(d)!);
-    const b = commonDates.map((d) => diffsB.get(d)!);
+    const { dates, a, b } = this.alignedLevels(seriesA, seriesB, actualDays);
     return {
       window: label,
       correlation: this.pearsonCorrelation(a, b),
-      observations: commonDates.length,
+      observations: dates.length,
+      start_date: dates[0],
+      end_date: dates[dates.length - 1],
     };
   }
 
   /**
-   * Regression beta of A on B over the most recent `actualDays` common
-   * diffs — same date-alignment/window pattern as rollingCorrelation, but
-   * answers a different question: correlation says whether A and B move
-   * together; beta says how MUCH A moves for a $1 move in B. A strongly
-   * anti-correlated pair can still need a very uneven lot ratio to actually
-   * hedge if one moves much more than the other per lot (e.g. a near-month
-   * vs. a far-month structure) — that's what this is for.
+   * Regression beta of A on B (A = dependent "Y", B = independent "X", as in
+   * QuantHub) over the most recent `actualDays` common trading days, on
+   * price levels. Correlation says whether A and B move together; beta says
+   * how MUCH A moves per unit move in B — a strongly correlated pair can
+   * still need an uneven lot ratio to hedge if one moves much more than the
+   * other per lot (e.g. a near-month vs. a far-month structure).
    */
   static regressionBeta(seriesA: DailySeriesPoint[], seriesB: DailySeriesPoint[], actualDays: number): { beta?: number; observations: number } {
-    const diffsA = this.seriesDiffs(seriesA);
-    const diffsB = this.seriesDiffs(seriesB);
-    const commonDates = Array.from(diffsA.keys())
-      .filter((d) => diffsB.has(d))
-      .sort()
-      .slice(-actualDays);
-    const a = commonDates.map((d) => diffsA.get(d)!);
-    const b = commonDates.map((d) => diffsB.get(d)!);
-    return { beta: this.betaFromArrays(a, b), observations: commonDates.length };
+    const { dates, a, b } = this.alignedLevels(seriesA, seriesB, actualDays);
+    return { beta: this.betaFromArrays(a, b), observations: dates.length };
   }
 
   /** Standard deviation of a series' day-over-day diffs over the trailing `actualDays` — a $ volatility figure when `series` is already dollar-denominated. Undefined on too few points. */
@@ -366,13 +356,12 @@ export class CorrelationEngine {
 
   /**
    * A TREND of correlation values, not one number: slides a `windowDays`
-   * sub-window of diffs one day at a time across the trailing `periodDays`
-   * of history, computing one Pearson correlation per position — e.g.
-   * period=30/window=7 -> correlation over days 1-7, then 2-8, ... 24-30
-   * (24 points), so a strengthening/fading relationship is visible instead
-   * of a single static snapshot. `windowDays` is clamped to what's actually
-   * available (>= 2, since Pearson needs at least 2 diffs, and <= the
-   * period's own diff count).
+   * sub-window of price levels one day at a time across the trailing
+   * `periodDays` of common trading days, computing one Pearson correlation
+   * per position — e.g. period=60/window=20 -> correlation over days 1-20,
+   * then 2-21, ... 41-60 (41 points), so a strengthening/fading relationship
+   * is visible instead of a single static snapshot. `windowDays` is clamped
+   * to >= 2 (Pearson needs two points) and <= the period's own point count.
    */
   static rollingCorrelationTrend(
     seriesA: DailySeriesPoint[],
@@ -380,21 +369,17 @@ export class CorrelationEngine {
     periodDays: number,
     windowDays: number
   ): { endDate: string; correlation?: number; observations: number }[] {
-    const diffsA = this.seriesDiffs(seriesA);
-    const diffsB = this.seriesDiffs(seriesB);
-    const commonDates = Array.from(diffsA.keys())
-      .filter((d) => diffsB.has(d))
-      .sort()
-      .slice(-periodDays);
-    if (commonDates.length < 2) return [];
-    const win = Math.max(2, Math.min(windowDays, commonDates.length));
+    const { dates, a, b } = this.alignedLevels(seriesA, seriesB, periodDays);
+    if (dates.length < 2) return [];
+    const win = Math.max(2, Math.min(windowDays, dates.length));
 
     const points: { endDate: string; correlation?: number; observations: number }[] = [];
-    for (let end = win; end <= commonDates.length; end++) {
-      const slice = commonDates.slice(end - win, end);
-      const a = slice.map((d) => diffsA.get(d)!);
-      const b = slice.map((d) => diffsB.get(d)!);
-      points.push({ endDate: slice[slice.length - 1], correlation: this.pearsonCorrelation(a, b), observations: slice.length });
+    for (let end = win; end <= dates.length; end++) {
+      points.push({
+        endDate: dates[end - 1],
+        correlation: this.pearsonCorrelation(a.slice(end - win, end), b.slice(end - win, end)),
+        observations: win,
+      });
     }
     return points;
   }
@@ -409,71 +394,59 @@ export class CorrelationEngine {
   }
 
   /**
-   * How a not-yet-created candidate structure would interact with the
-   * existing open book, excluding nothing else (the candidate isn't in
-   * `existing` since it hasn't been created). Exposure-weighted by each
-   * existing structure's actual open lots (`exposureById`, from
-   * structureExposureLots — NOT current_dollar_risk, a risk/stop-loss
-   * budget that can diverge from real position size), so a large position's
-   * correlation matters more than a tiny one's, based on what's actually
-   * held rather than how much risk happens to be allocated to it.
+   * How a NEW ENTRY (only its own direction and lots — not the structure's
+   * existing position) interacts with the existing whole book:
+   *   - portfolioCorrelation: correlation (price levels, QuantHub-style) of
+   *     the entry with the book's combined position (every open structure,
+   *     including the structure being added to).
+   *   - perStructure: the entry's correlation with each open structure on its own.
+   *   - bookRiskBefore/After: the book's typical daily $ swing without / with
+   *     the entry, and entryStandaloneRisk the entry's own swing. Unlike
+   *     correlation, this responds to lot size and direction.
+   * Verdict compares the "after" swing with what a completely unrelated entry
+   * would give (risks add in quadrature): clearly below = Diversifying,
+   * clearly above = Concentrating, otherwise Neutral (independent).
    */
-  static analyzeNewTrade(
-    candidateSeries: DailySeriesPoint[],
-    existing: { structure: Structure; series: DailySeriesPoint[] }[],
-    window: CorrelationWindow,
-    actualDays: number,
-    warningThreshold: number,
-    exposureById: Map<UUID, number>
-  ): NewTradeCorrelationAnalysis {
+  static analyzeEntryVsBook(input: {
+    candidateSeries: DailySeriesPoint[];
+    bookSeries: DailySeriesPoint[];
+    existing: { structure: Structure; series: DailySeriesPoint[] }[];
+    candidateDollarSeries: DailySeriesPoint[];
+    bookDollarSeriesList: DailySeriesPoint[][];
+    window: CorrelationWindow;
+    actualDays: number;
+    warningThreshold: number;
+  }): NewTradeCorrelationAnalysis {
+    const { candidateSeries, bookSeries, existing, candidateDollarSeries, bookDollarSeriesList, window, actualDays, warningThreshold } = input;
+
     const perStructure = existing.map(({ structure, series }) => {
       const wc = this.rollingCorrelation(candidateSeries, series, actualDays, window);
-      return {
-        structure_id: structure.id,
-        structure_name: structure.name,
-        correlation: wc.correlation,
-        observations: wc.observations,
-        exposure: exposureById.get(structure.id) ?? 0,
-      };
+      return { structure_id: structure.id, structure_name: structure.name, correlation: wc.correlation, observations: wc.observations };
     });
+    const portfolioCorrelation = this.rollingCorrelation(candidateSeries, bookSeries, actualDays, window).correlation;
 
-    const withCorrelation = perStructure.filter((p) => p.correlation !== undefined);
-    const totalExposure = withCorrelation.reduce((s, p) => s + Math.max(p.exposure, 0), 0);
-    const portfolioCorrelation =
-      totalExposure > 0
-        ? withCorrelation.reduce((s, p) => s + p.correlation! * Math.max(p.exposure, 0), 0) / totalExposure
-        : withCorrelation.length > 0
-          ? withCorrelation.reduce((s, p) => s + p.correlation!, 0) / withCorrelation.length
-          : undefined;
+    const entryStandaloneRisk = this.dollarVolatility(candidateDollarSeries, actualDays);
+    const bookRiskBefore = this.combinedDollarVolatility(bookDollarSeriesList, actualDays);
+    const bookRiskAfter = this.combinedDollarVolatility([...bookDollarSeriesList, candidateDollarSeries], actualDays);
 
-    const warnings: string[] = [];
     let verdict: NewTradeCorrelationAnalysis["verdict"] = "Insufficient data";
-
-    if (portfolioCorrelation !== undefined) {
-      verdict = portfolioCorrelation >= 0.3 ? "Concentrating" : portfolioCorrelation <= -0.2 ? "Diversifying" : "Neutral";
+    if (bookRiskBefore !== undefined && bookRiskAfter !== undefined && entryStandaloneRisk !== undefined && entryStandaloneRisk > 0) {
+      const independentAfter = Math.sqrt(bookRiskBefore ** 2 + entryStandaloneRisk ** 2);
+      const r = bookRiskAfter / independentAfter;
+      verdict = r < 0.95 ? "Diversifying" : r > 1.05 ? "Concentrating" : "Neutral";
     }
 
-    for (const p of withCorrelation) {
-      if (Math.abs(p.correlation!) >= warningThreshold) {
-        const direction = p.correlation! > 0 ? "adds to" : "hedges against";
+    const warnings: string[] = [];
+    for (const p of perStructure) {
+      if (p.correlation !== undefined && Math.abs(p.correlation) >= warningThreshold) {
+        const direction = p.correlation > 0 ? "adds to" : "hedges against";
         warnings.push(
-          `Highly correlated with "${p.structure_name}" (${p.correlation!.toFixed(2)}, ${window}d) — this ${direction} that exposure rather than sitting independently.`
+          `Highly correlated with "${p.structure_name}" (${Math.round(p.correlation * 100)}, ${window}d) — this entry ${direction} that exposure rather than sitting independently.`
         );
       }
     }
 
-    return {
-      window,
-      perStructure: perStructure.map(({ structure_id, structure_name, correlation, observations }) => ({
-        structure_id,
-        structure_name,
-        correlation,
-        observations,
-      })),
-      portfolioCorrelation,
-      verdict,
-      warnings,
-    };
+    return { window, perStructure, portfolioCorrelation, bookRiskBefore, bookRiskAfter, entryStandaloneRisk, verdict, warnings };
   }
 
   /**

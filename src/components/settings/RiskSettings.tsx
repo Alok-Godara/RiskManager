@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { repository } from "../../data";
 import type { AppSettings, CorrelationWindow } from "../../types/domain";
 import { CORRELATION_WINDOWS } from "../../types/domain";
+import { DEFAULT_PERIODS, DEFAULT_ROLLING_WINDOWS, normalizeWindowConfig } from "../../services/settlementData/correlationContext";
 
 const DEFAULTS: Omit<AppSettings, "id"> = {
   correlation_warning_threshold: 0.7,
   concentration_risk_threshold: 0.65,
-  correlation_periods: { 5: 5, 15: 15, 30: 30 },
-  correlation_rolling_windows: { 5: 5, 15: 5, 30: 7 },
+  correlation_periods: DEFAULT_PERIODS,
+  correlation_rolling_windows: DEFAULT_ROLLING_WINDOWS,
 };
 
 /** Structures -> Portfolio Correlation & Concentration warning thresholds — see engines/CorrelationEngine.ts. */
@@ -25,8 +26,8 @@ export function RiskSettings() {
         setForm({
           correlation_warning_threshold: settings.correlation_warning_threshold,
           concentration_risk_threshold: settings.concentration_risk_threshold,
-          correlation_periods: settings.correlation_periods ?? DEFAULTS.correlation_periods,
-          correlation_rolling_windows: settings.correlation_rolling_windows ?? DEFAULTS.correlation_rolling_windows,
+          correlation_periods: normalizeWindowConfig(settings.correlation_periods, DEFAULT_PERIODS),
+          correlation_rolling_windows: normalizeWindowConfig(settings.correlation_rolling_windows, DEFAULT_ROLLING_WINDOWS),
         });
       }
       setLoading(false);

@@ -326,7 +326,58 @@ body {
   padding: 14px 16px;
   transition: transform 0.15s, border-color 0.15s;
 }
-.stat-card:hover { transform: translateY(-2px); border-color: rgba(255, 255, 255, 0.14); }
+.stat-card:hover { transform: translateY(-2px); border-color: rgba(255, 255, 255, 0.14); position: relative; z-index: 5; }
+
+/* "i" info badge + hover explanation (components/InfoTip.tsx) */
+.info-tip {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 6px;
+  outline: none;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.info-tip-icon {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--text-faint);
+  color: var(--text-dim);
+  font-size: 0.62rem;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+  cursor: help;
+}
+.info-tip:hover .info-tip-icon,
+.info-tip:focus .info-tip-icon { border-color: var(--accent-strong); color: var(--accent-strong); }
+.info-tip-body {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: -8px;
+  width: 270px;
+  z-index: 60;
+  padding: 10px 12px;
+  background: var(--panel-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 400;
+  font-style: normal;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.info-tip.align-right .info-tip-body { left: auto; right: -8px; }
+.info-tip:hover .info-tip-body,
+.info-tip:focus .info-tip-body { display: block; }
 
 .stat-label {
   font-size: 0.66rem;

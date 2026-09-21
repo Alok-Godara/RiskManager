@@ -6,17 +6,31 @@ import { formatDateParam, previousTradingDay, tradingDaysIncluding } from "../..
 import { SettlementHistoryService } from "./settlementHistoryService";
 
 /** Default trading-day lookback per label — used until the user configures their own in Settings -> Correlation & Concentration. */
-const DEFAULT_PERIODS: Record<CorrelationWindow, number> = { 5: 5, 15: 15, 30: 30 };
+export const DEFAULT_PERIODS: Record<CorrelationWindow, number> = { 30: 30, 60: 60, 90: 90 };
 /**
  * Default rolling sub-window size per label, for the TREND (see
- * CorrelationEngine.rollingCorrelationTrend) — a 5-day period only fits one
- * 5-day window (same single-number behavior as before this existed); 15d
- * and 30d get an actual trend. 30d's default of 7 matches a "hold for about
- * a week" horizon, a reasonable middle ground absent a stated preference.
+ * CorrelationEngine.rollingCorrelationTrend) — sized so each label's trend
+ * has a meaningful number of points (30d/10 -> 21 points, 60d/20 -> 41,
+ * 90d/30 -> 61) while each sub-window still spans a couple of weeks.
  */
-const DEFAULT_ROLLING_WINDOWS: Record<CorrelationWindow, number> = { 5: 5, 15: 5, 30: 7 };
+export const DEFAULT_ROLLING_WINDOWS: Record<CorrelationWindow, number> = { 30: 10, 60: 20, 90: 30 };
 
-/** N+1 settlement observations are needed for an N-day rolling correlation (N diffs) — the fallback before any period config exists. */
+/**
+ * Saved settings from before the 30/60/90 windows (keys 5/15/30) can't be
+ * mixed with the new labels — use them only if EVERY current window key is
+ * present, otherwise fall back to the defaults.
+ */
+export function normalizeWindowConfig(
+  saved: Record<number, number> | undefined | null,
+  defaults: Record<CorrelationWindow, number>
+): Record<CorrelationWindow, number> {
+  if (saved && CORRELATION_WINDOWS.every((w) => typeof saved[w] === "number" && saved[w] > 0)) {
+    return Object.fromEntries(CORRELATION_WINDOWS.map((w) => [w, saved[w]])) as Record<CorrelationWindow, number>;
+  }
+  return defaults;
+}
+
+/** Trading days of history needed for the longest window — fallback before any period config exists (one extra so the daily-change volatility math has N changes). */
 export const HISTORY_TRADING_DAYS = Math.max(...CORRELATION_WINDOWS) + 1;
 
 /** How many trading days of settlement history to fetch/keep, given the configured periods — the longest period, plus one (see HISTORY_TRADING_DAYS). */
@@ -33,6 +47,8 @@ export interface CorrelationContext {
     positionDollarSeries: DailySeriesPoint[];
     /** Template-ratio-weighted series (independent of how many lots are currently held), converted to $ — the basis for Beta/regression and Hedge Ratio, which are properties of the structures' shapes, not of current position size. */
     perLotDollarSeries: DailySeriesPoint[];
+    /** This structure's current position decomposed to signed outright-month weights (net lots per contract) — exactly what you'd enter as a custom structure in QuantHub to reproduce its correlation. */
+    outrightWeights: { contract_id: UUID; ratio: number }[];
   }[];
   tradingDates: string[]; // YYYY-MM-DD, oldest..newest
   contractsById: Map<UUID, Contract>;
@@ -149,7 +165,7 @@ export async function buildCorrelationContext(
     const positionDollarSeries = series.map((pt) => ({ ...pt, value: pt.value * dollarPerPriceUnit }));
     const perLotDollarSeries = perLotSeries.map((pt) => ({ ...pt, value: pt.value * dollarPerPriceUnit }));
 
-    return { structure, series, positionDollarSeries, perLotDollarSeries };
+    return { structure, series, positionDollarSeries, perLotDollarSeries, outrightWeights: positionWeights };
   });
   const netExposureByContract = CorrelationEngine.netExposureByContract(
     openStructuresWithLegs.map(({ legs }) => ({ legs: legs.map((l) => ({ contract_id: l.contract_id, ratio: l.net_quantity })) })),
@@ -191,7 +207,7 @@ export async function getCorrelationSettings(): Promise<CorrelationSettings> {
   return {
     correlation: settings?.correlation_warning_threshold ?? DEFAULT_APP_SETTINGS.correlation_warning_threshold,
     concentration: settings?.concentration_risk_threshold ?? DEFAULT_APP_SETTINGS.concentration_risk_threshold,
-    periods: settings?.correlation_periods ?? DEFAULT_PERIODS,
-    rollingWindows: settings?.correlation_rolling_windows ?? DEFAULT_ROLLING_WINDOWS,
+    periods: normalizeWindowConfig(settings?.correlation_periods, DEFAULT_PERIODS),
+    rollingWindows: normalizeWindowConfig(settings?.correlation_rolling_windows, DEFAULT_ROLLING_WINDOWS),
   };
 }

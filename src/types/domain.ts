@@ -319,13 +319,13 @@ export interface AppSettings {
   id: UUID; // always "default"
   correlation_warning_threshold: number; // 0..1 — pairwise |correlation| that triggers a warning
   concentration_risk_threshold: number; // 0..1 — risk-weighted same-direction fraction that triggers a warning
-  // Trading-day lookback per label, e.g. { 5: 5, 15: 15, 30: 30 } by default
+  // Trading-day lookback per label, e.g. { 30: 30, 60: 60, 90: 90 } by default
   // — how far back settlement history is fetched/considered for that column.
   correlation_periods: Record<CorrelationWindow, number>;
   // Sub-window size per label used for the ROLLING correlation trend within
   // its period (see engines/CorrelationEngine.ts rollingCorrelationTrend) —
-  // e.g. period=30/window=7 computes a 7-day correlation, slid one day at a
-  // time across the trailing 30 days, producing a trend rather than one
+  // e.g. period=60/window=20 computes a 20-day correlation, slid one day at a
+  // time across the trailing 60 days, producing a trend rather than one
   // number. Clamped to <= that label's period.
   correlation_rolling_windows: Record<CorrelationWindow, number>;
 }
@@ -400,13 +400,16 @@ export interface PortfolioSummary {
 // from settlement-price history, never live/intraday prices, since it's a
 // day-over-day co-movement read, not a real-time one.
 // ---------------------------------------------------------------------------
-export const CORRELATION_WINDOWS = [5, 15, 30] as const;
+export const CORRELATION_WINDOWS = [30, 60, 90] as const;
 export type CorrelationWindow = (typeof CORRELATION_WINDOWS)[number];
 
 export interface WindowCorrelation {
   window: CorrelationWindow;
   correlation?: number; // -1..1, undefined if too few paired observations
-  observations: number; // daily diffs actually used
+  observations: number; // trading days (paired price points) actually used
+  // First/last trading day of those points — i.e. the Start/End you'd enter in QuantHub's Correlation & Hedging tool to reproduce this number.
+  start_date?: string;
+  end_date?: string;
 }
 
 export interface StructurePairCorrelation {
@@ -420,8 +423,14 @@ export interface StructurePairCorrelation {
 export interface NewTradeCorrelationAnalysis {
   window: CorrelationWindow;
   perStructure: { structure_id: UUID; structure_name: string; correlation?: number; observations: number }[];
-  // Risk-weighted average correlation vs the existing book at this window.
+  // Correlation of ONLY the new entry (its direction and lots) with the
+  // existing whole book (every open structure's combined position) at this window.
   portfolioCorrelation?: number;
+  // Typical daily $ swing of the existing book before / after adding this
+  // entry, and of the entry on its own — see CorrelationEngine.analyzeEntryVsBook.
+  bookRiskBefore?: number;
+  bookRiskAfter?: number;
+  entryStandaloneRisk?: number;
   verdict: "Diversifying" | "Concentrating" | "Neutral" | "Insufficient data";
   warnings: string[];
 }
