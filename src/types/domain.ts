@@ -360,12 +360,17 @@ export interface EntrySnapshot {
   entry_group_id: UUID;
   structure_id: UUID;
   timestamp: string;
-  structure_lots: number; // ORIGINAL size implied by qty = |ratio| * structure_lots on each leg
-  side: LegSide; // this entry's own chosen direction — see StructureEngine.addEntry's `direction` input
-  avg_price: number; // composite structure price for this entry: sum(ratio_i * price_i)
+  // "structure" = every leg, lots proportional to the leg ratios, one common
+  // direction (a normal structure entry). "custom" = only some legs, or leg
+  // lots/sides edited — then the entry-level lot figures below are plain TOTAL
+  // LEG LOTS, and the composite figures (avg_price etc.) are undefined.
+  kind: "structure" | "custom";
+  structure_lots: number; // structure entry: ORIGINAL size, qty = |ratio| * structure_lots on each leg. custom: total leg lots entered.
+  side: LegSide | "Mixed"; // this entry's own direction; "Mixed" when a custom entry's legs go different ways
+  avg_price?: number; // structure entries only: composite structure price sum(ratio_i * price_i)
   risk_allocated: number;
-  open_quantity: number; // structure lots still open (structure_lots minus whatever's been exited from THIS entry)
-  closed_quantity: number; // structure lots exited from this entry specifically (entry-scoped, not FIFO — see PositionEngine)
+  open_quantity: number; // still open from THIS entry (structure lots for a structure entry, total leg lots for a custom one)
+  closed_quantity: number; // exited from this entry specifically (entry-scoped, not FIFO — see PositionEngine)
   avg_exit_price?: number; // composite exit price, qty-weighted across this entry's own exits; undefined until closed_quantity > 0
   unrealized_pnl: number; // based on open_quantity only
   realized_pnl: number; // sum of RealizedPnLEvent rows from exits that closed this entry, in $ (see PositionEngine's tick-value conversion)
@@ -373,7 +378,14 @@ export interface EntrySnapshot {
   // at which this entry's loss would equal risk_allocated. Undefined if no
   // risk was allocated to this entry.
   stop_loss_price?: number;
-  legs: { leg: StructureLeg; contract: Contract; execution: Execution }[];
+  legs: {
+    leg: StructureLeg;
+    contract: Contract;
+    execution: Execution;
+    entered_qty: number; // this leg's lots when the entry was taken
+    closed_qty: number; // exited from this leg of this entry
+    open_qty: number; // entered - closed
+  }[];
 }
 
 export interface InstrumentNetPositionRow {

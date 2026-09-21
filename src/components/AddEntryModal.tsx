@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { v4 as uuid } from "uuid";
-import type { Contract, Instrument, StructureSnapshot, StructureTemplate } from "../types/domain";
+import type { Contract, Instrument, LegSide, StructureSnapshot, StructureTemplate } from "../types/domain";
 import { StructureEngine } from "../engines/StructureEngine";
 import { CorrelationEngine } from "../engines/CorrelationEngine";
 import { repository } from "../data";
@@ -28,6 +28,12 @@ export function AddEntryModal({
   const legs = snapshot.legs;
   const [structureLots, setStructureLots] = useState<number>(1);
   const [direction, setDirection] = useState<1 | -1>(1);
+  // Per-leg overrides of the prefilled lots / side. Changing Structure Lots
+  // or Direction clears them, so those two always re-prefill every leg.
+  const [qtyOverride, setQtyOverride] = useState<Record<string, number>>({});
+  const [sideOverride, setSideOverride] = useState<Record<string, LegSide>>({});
+  const effQty = (legId: string, ratio: number) => qtyOverride[legId] ?? Math.abs(ratio) * structureLots;
+  const effSide = (legId: string, ratio: number): LegSide => sideOverride[legId] ?? (ratio * direction >= 0 ? "Long" : "Short");
   const [legPrices, setLegPrices] = useState<Record<string, number>>(
     Object.fromEntries(legs.map((l) => [l.leg.id, l.current_price ?? 0]))
   );
@@ -57,17 +63,20 @@ export function AddEntryModal({
       list.push(c);
       instrumentContractsByInstrument.set(c.instrument_id, list);
     }
-    const legInputs = legs.map((l) => ({ contract_id: l.leg.contract_id, ratio: l.leg.ratio }));
-    const base = CorrelationEngine.legsToOutrightWeights(legInputs, contractsById, templatesById, instrumentContractsByInstrument);
-    return base.map((w) => ({ contract_id: w.contract_id, ratio: w.ratio * direction * structureLots }));
+    // Each leg's signed lots (Long +, Short -) as typed in the table below.
+    const legInputs = legs.map((l) => ({
+      contract_id: l.leg.contract_id,
+      ratio: (effSide(l.leg.id, l.leg.ratio) === "Long" ? 1 : -1) * effQty(l.leg.id, l.leg.ratio),
+    }));
+    return CorrelationEngine.legsToOutrightWeights(legInputs, contractsById, templatesById, instrumentContractsByInstrument);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [legs, contracts, templates, direction, structureLots]);
+  }, [legs, contracts, templates, direction, structureLots, qtyOverride, sideOverride]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
-    if (structureLots <= 0) {
-      setError("Structure lots must be greater than 0.");
+    if (!legs.some((l) => effQty(l.leg.id, l.leg.ratio) > 0)) {
+      setError("Enter lots for at least one leg.");
       return;
     }
     setSaving(true);
@@ -75,8 +84,8 @@ export function AddEntryModal({
       const entryGroupId = uuid();
       let first = true;
       for (const leg of legs) {
-        const qty = Math.abs(leg.leg.ratio) * structureLots;
-        if (qty === 0) continue;
+        const qty = effQty(leg.leg.id, leg.leg.ratio);
+        if (!(qty > 0)) continue;
         const price = legPrices[leg.leg.id] ?? 0;
         await StructureEngine.addEntry({
           structure_id: snapshot.structure.id,
@@ -84,6 +93,7 @@ export function AddEntryModal({
           quantity: qty,
           price,
           direction,
+          side: effSide(leg.leg.id, leg.leg.ratio),
           risk_allocated: first && riskAllocated !== "" ? Number(riskAllocated) : undefined,
           entry_group_id: entryGroupId,
         });
@@ -104,10 +114,10 @@ export function AddEntryModal({
         <div className="form-row">
           <label>Direction</label>
           <div className="segmented">
-            <button type="button" className={direction === 1 ? "active" : ""} onClick={() => setDirection(1)}>
+            <button type="button" className={direction === 1 ? "active" : ""} onClick={() => { setDirection(1); setQtyOverride({}); setSideOverride({}); }}>
               Long
             </button>
-            <button type="button" className={direction === -1 ? "active" : ""} onClick={() => setDirection(-1)}>
+            <button type="button" className={direction === -1 ? "active" : ""} onClick={() => { setDirection(-1); setQtyOverride({}); setSideOverride({}); }}>
               Short
             </button>
           </div>
@@ -116,7 +126,17 @@ export function AddEntryModal({
 
         <div className="form-row">
           <label>Structure Lots</label>
-          <input type="number" min={0} step="1" value={structureLots} onChange={(e) => setStructureLots(Number(e.target.value))} />
+          <input
+            type="number"
+            min={0}
+            step="1"
+            value={structureLots}
+            onChange={(e) => {
+              setStructureLots(Number(e.target.value));
+              setQtyOverride({});
+              setSideOverride({});
+            }}
+          />
         </div>
 
         <table className="data-table compact">
@@ -124,6 +144,7 @@ export function AddEntryModal({
             <tr>
               <th>Leg</th>
               <th>Ratio</th>
+              <th>Side</th>
               <th>Qty (lots)</th>
               <th>Live Price</th>
               <th>Execution Price</th>
@@ -134,7 +155,29 @@ export function AddEntryModal({
               <tr key={l.leg.id}>
                 <td>{l.contract.month_label}</td>
                 <td className={l.leg.ratio >= 0 ? "pnl-pos" : "pnl-neg"}>{l.leg.ratio >= 0 ? `+${l.leg.ratio}` : l.leg.ratio}</td>
-                <td>{Math.abs(l.leg.ratio) * structureLots}</td>
+                <td>
+                  <button
+                    type="button"
+                    className="secondary"
+                    style={{ marginBottom: 0, padding: "4px 10px" }}
+                    onClick={() =>
+                      setSideOverride((prev) => ({ ...prev, [l.leg.id]: effSide(l.leg.id, l.leg.ratio) === "Long" ? "Short" : "Long" }))
+                    }
+                    title="Click to flip this leg's side"
+                  >
+                    <span className={effSide(l.leg.id, l.leg.ratio) === "Long" ? "pnl-pos" : "pnl-neg"}>{effSide(l.leg.id, l.leg.ratio)}</span>
+                  </button>
+                </td>
+                <td>
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={effQty(l.leg.id, l.leg.ratio)}
+                    onChange={(e) => setQtyOverride((prev) => ({ ...prev, [l.leg.id]: Math.max(0, Number(e.target.value)) }))}
+                    style={{ width: 80 }}
+                  />
+                </td>
                 <td className="muted">{fmtPrice(l.current_price)}</td>
                 <td>
                   <input
@@ -150,8 +193,8 @@ export function AddEntryModal({
           </tbody>
         </table>
         <p className="helper-text">
-          Execution price defaults to the current live quote for each leg — edit any field if your actual fill
-          differs.
+          Structure Lots and Direction prefill every leg — then change any leg's lots or side. Set a leg to 0 to skip it (a single-leg
+          entry is fine). Prices default to the live quote; edit if your fill differs.
         </p>
 
         <div className="form-row">

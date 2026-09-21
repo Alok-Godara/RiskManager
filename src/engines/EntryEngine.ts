@@ -1,5 +1,7 @@
-import type { Execution, EntrySnapshot, LegSide, LegSnapshot, StructureSnapshot, UUID } from "../types/domain";
+import type { Execution, EntrySnapshot, LegSnapshot, StructureSnapshot, UUID } from "../types/domain";
 import { repository } from "../data";
+
+const EPS = 1e-9;
 
 /**
  * EntryEngine: groups the flat, per-leg Execution audit trail back into
@@ -7,10 +9,17 @@ import { repository } from "../data";
  * touched (see Execution.entry_group_id) — for the StructureDetail Entries
  * table. Read-only / derived; StructureEngine remains the only writer.
  *
+ * An entry can be a normal STRUCTURE entry (every leg, quantities
+ * proportional to the leg ratios, one common direction) or a CUSTOM one
+ * (only some legs, or per-leg lots/sides edited). Structure-level figures —
+ * composite average price, structure lots, a single Long/Short side, the
+ * composite stop level — only make sense for the first kind; for custom
+ * entries they're left undefined/"Mixed" and the per-leg rows carry the
+ * detail.
+ *
  * Exits are entry-scoped (Execution.closes_entry_group_id — see
- * PositionEngine), so each entry's own closed/open quantity, average exit
- * price, and realized P&L can be derived directly by filtering exits that
- * named THIS entry, rather than guessing from FIFO order.
+ * PositionEngine), so each leg's closed/open quantity is derived directly
+ * by filtering exits that named THIS entry, rather than guessing from FIFO.
  */
 export class EntryEngine {
   static async buildEntrySnapshots(snapshot: StructureSnapshot): Promise<EntrySnapshot[]> {
@@ -35,58 +44,67 @@ export class EntryEngine {
 
     const results: EntrySnapshot[] = [];
     for (const [entryGroupId, executions] of groups) {
-      const rows = executions
+      const baseRows = executions
         .map((execution) => {
           const legSnap = legById.get(execution.structure_leg_id);
           return legSnap ? { execution, legSnap } : undefined;
         })
         .filter((r): r is { execution: Execution; legSnap: LegSnapshot } => Boolean(r));
-      if (rows.length === 0) continue;
+      if (baseRows.length === 0) continue;
 
-      const timestamp = rows.reduce(
-        (min, r) => (r.execution.timestamp < min ? r.execution.timestamp : min),
-        rows[0].execution.timestamp
-      );
+      const closingExecutions = exitExecutions.filter((e) => e.closes_entry_group_id === entryGroupId);
 
-      // Composite structure price for this entry: sum(ratio_i * price_i) —
-      // the same convention a quoted spread/fly's own price follows (see
-      // supabase/schema.sql / StructureQuoteEngine), so it's directly
-      // comparable across entries and to a live "Structure"-kind quote.
-      const avgPrice = rows.reduce((sum, r) => sum + r.legSnap.leg.ratio * r.execution.price, 0);
+      // Per-leg entered / closed / open lots for THIS entry.
+      const rows = baseRows.map((r) => {
+        const closedQty = closingExecutions
+          .filter((e) => e.structure_leg_id === r.legSnap.leg.id)
+          .reduce((sum, e) => sum + e.quantity, 0);
+        const enteredQty = r.execution.quantity;
+        return { ...r, enteredQty, closedQty, openQty: Math.max(enteredQty - closedQty, 0) };
+      });
+
+      const timestamp = rows.reduce((min, r) => (r.execution.timestamp < min ? r.execution.timestamp : min), rows[0].execution.timestamp);
       const riskAllocated = rows.reduce((sum, r) => sum + (r.execution.risk_allocated ?? 0), 0);
 
-      // Every leg's quantity = |ratio| * structure lots by construction
-      // (AddEntryModal / EditEntryModal) — recover it from whichever leg has
-      // the largest ratio magnitude, for numerical stability.
+      // Is this a normal structure entry? Every leg present, lots proportional
+      // to |ratio|, and one common direction (side = sideFromRatio(ratio * d)).
       const anchor = rows.reduce((a, b) => (Math.abs(b.legSnap.leg.ratio) > Math.abs(a.legSnap.leg.ratio) ? b : a));
       const anchorRatioAbs = Math.abs(anchor.legSnap.leg.ratio);
-      const structureLots = anchorRatioAbs > 0 ? anchor.execution.quantity / anchorRatioAbs : 0;
+      const structureLots = anchorRatioAbs > 0 ? anchor.enteredQty / anchorRatioAbs : 0;
+      const direction: 1 | -1 = anchor.legSnap.leg.ratio >= 0 === (anchor.execution.side === "Long") ? 1 : -1;
+      const sidesFollowDirection = rows.every((r) => r.execution.side === (r.legSnap.leg.ratio * direction >= 0 ? "Long" : "Short"));
+      const isStructureEntry =
+        rows.length === snapshot.legs.length &&
+        structureLots > 0 &&
+        sidesFollowDirection &&
+        rows.every((r) => {
+          const ratioAbs = Math.abs(r.legSnap.leg.ratio);
+          return Math.abs(r.enteredQty - ratioAbs * structureLots) <= EPS * Math.max(1, r.enteredQty);
+        });
 
-      // This entry's own chosen direction (StructureEngine.addEntry's
-      // `direction`) — NOT simply the anchor leg's own execution.side,
-      // which flips with that leg's ratio sign (e.g. a Fly's middle leg is
-      // ratio -2, so its own side reads "Short" even on a Long entry).
-      // side = sideFromRatio(leg.ratio * direction), so recovering
-      // direction just compares whether the leg's ratio sign and its
-      // recorded side agree.
-      const anchorRatioNonNegative = anchor.legSnap.leg.ratio >= 0;
-      const anchorSideIsLong = anchor.execution.side === "Long";
-      const side: LegSide = anchorRatioNonNegative === anchorSideIsLong ? "Long" : "Short";
+      let side: EntrySnapshot["side"];
+      if (isStructureEntry || (rows.length > 1 && sidesFollowDirection)) side = direction === 1 ? "Long" : "Short";
+      else if (rows.length === 1) side = rows[0].execution.side;
+      else side = rows.every((r) => r.execution.side === rows[0].execution.side) ? rows[0].execution.side : "Mixed";
 
-      // This entry's own exits, entry-scoped (closes_entry_group_id), never
-      // FIFO-guessed — see PositionEngine's per-entry lot tracking.
-      const closingExecutions = exitExecutions.filter((e) => e.closes_entry_group_id === entryGroupId);
-      const anchorCloses = closingExecutions.filter((e) => e.structure_leg_id === anchor.legSnap.leg.id);
-      const closedQtyOnAnchor = anchorCloses.reduce((sum, e) => sum + e.quantity, 0);
-      const closedQuantity = anchorRatioAbs > 0 ? closedQtyOnAnchor / anchorRatioAbs : 0;
-      const openQuantity = Math.max(structureLots - closedQuantity, 0);
+      // Entry-level lots: structure lots for a structure entry (however many
+      // are still open on the most-open leg), plain total leg lots otherwise.
+      let entryLots: number;
+      let openLots: number;
+      if (isStructureEntry) {
+        entryLots = structureLots;
+        openLots = Math.max(...rows.map((r) => r.openQty / Math.abs(r.legSnap.leg.ratio || 1)));
+      } else {
+        entryLots = rows.reduce((s, r) => s + r.enteredQty, 0);
+        openLots = rows.reduce((s, r) => s + r.openQty, 0);
+      }
+      const closedLots = Math.max(entryLots - openLots, 0);
 
-      // Composite exit price (same sum(ratio_i * price_i) convention as
-      // avgPrice), qty-weighted per leg across possibly-multiple partial
-      // exits — only defined once every leg has at least one exit recorded
-      // against this entry.
+      // Composite (sum ratio_i * price_i) prices only exist for a structure entry.
+      const avgPrice = isStructureEntry ? rows.reduce((sum, r) => sum + r.legSnap.leg.ratio * r.execution.price, 0) : undefined;
+
       let avgExitPrice: number | undefined;
-      if (closedQuantity > 0) {
+      if (isStructureEntry && closedLots > 0) {
         let complete = true;
         let composite = 0;
         for (const r of rows) {
@@ -102,52 +120,57 @@ export class EntryEngine {
         if (complete) avgExitPrice = composite;
       }
 
-      // Realized P&L for this entry: RealizedPnLEvent rows produced by
-      // exits that closed it, cross-referenced by execution_id — already in
-      // $ (PositionEngine applies the tick-value conversion before these
-      // events are recorded), so no re-derivation needed here.
       const closingExecutionIds = new Set(closingExecutions.map((e) => e.id));
       const realizedPnl = allRealizedEvents
         .filter((ev) => closingExecutionIds.has(ev.execution_id))
         .reduce((sum, ev) => sum + ev.realized_pnl, 0);
 
-      // Unrealized P&L reflects only what's still open on this entry, not
-      // its original full size — a partially-exited entry's unrealized P&L
-      // shrinks accordingly.
+      // Unrealized P&L reflects only what's still open on each leg.
       const unrealizedPnl = rows.reduce((sum, r) => {
         const currentPrice = r.legSnap.current_price;
         if (currentPrice === undefined) return sum;
-        const legOpenQty = Math.abs(r.legSnap.leg.ratio) * openQuantity;
-        const signedQty = r.execution.side === "Long" ? legOpenQty : -legOpenQty;
+        const signedQty = r.execution.side === "Long" ? r.openQty : -r.openQty;
         return sum + (currentPrice - r.execution.price) * dollarPerPriceUnit * signedQty;
       }, 0);
 
-      // Stop-loss level is fixed at entry time against the ORIGINAL entry
-      // size, not scaled down as it's partially exited. Direction matters:
-      // a Long entry loses money as price falls, so its stop sits BELOW
-      // avgPrice; a Short entry loses money as price rises, so its stop
-      // sits ABOVE avgPrice. Previously this always subtracted, silently
-      // assuming every entry was Long.
-      const slope = dollarPerPriceUnit * structureLots; // $ per 1 unit move in the composite price
-      const riskPriceDistance = slope > 0 ? riskAllocated / slope : 0;
-      const stopLossPrice =
-        riskAllocated > 0 && slope > 0 ? (side === "Long" ? avgPrice - riskPriceDistance : avgPrice + riskPriceDistance) : undefined;
+      // Stop level, fixed at entry time against the ORIGINAL size. A Long
+      // loses as price falls (stop BELOW entry), a Short as it rises (ABOVE).
+      // Composite level for a structure entry; the leg's own price level for
+      // a single-leg entry; undefined for other custom entries.
+      let stopLossPrice: number | undefined;
+      if (riskAllocated > 0 && dollarPerPriceUnit > 0) {
+        if (isStructureEntry && avgPrice !== undefined) {
+          const distance = riskAllocated / (dollarPerPriceUnit * structureLots);
+          stopLossPrice = side === "Long" ? avgPrice - distance : avgPrice + distance;
+        } else if (rows.length === 1 && rows[0].enteredQty > 0) {
+          const distance = riskAllocated / (dollarPerPriceUnit * rows[0].enteredQty);
+          stopLossPrice = rows[0].execution.side === "Long" ? rows[0].execution.price - distance : rows[0].execution.price + distance;
+        }
+      }
 
       results.push({
         entry_group_id: entryGroupId,
         structure_id: snapshot.structure.id,
         timestamp,
-        structure_lots: structureLots,
+        kind: isStructureEntry ? "structure" : "custom",
+        structure_lots: entryLots,
         side,
         avg_price: avgPrice,
         risk_allocated: riskAllocated,
-        open_quantity: openQuantity,
-        closed_quantity: closedQuantity,
+        open_quantity: openLots,
+        closed_quantity: closedLots,
         avg_exit_price: avgExitPrice,
         unrealized_pnl: unrealizedPnl,
         realized_pnl: realizedPnl,
         stop_loss_price: stopLossPrice,
-        legs: rows.map((r) => ({ leg: r.legSnap.leg, contract: r.legSnap.contract, execution: r.execution })),
+        legs: rows.map((r) => ({
+          leg: r.legSnap.leg,
+          contract: r.legSnap.contract,
+          execution: r.execution,
+          entered_qty: r.enteredQty,
+          closed_qty: r.closedQty,
+          open_qty: r.openQty,
+        })),
       });
     }
 

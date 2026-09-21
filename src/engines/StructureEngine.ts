@@ -2,6 +2,7 @@ import { v4 as uuid } from "uuid";
 import type {
   Structure,
   StructureLeg,
+  LegSide,
   Execution,
   AuditEvent,
   RealizedPnLEvent,
@@ -40,6 +41,9 @@ export interface NewEntryInput {
   // structure has no direction of its own any more; every entry picks its
   // own (spec: "a structure is simply a structure").
   direction: 1 | -1;
+  // Explicit Long/Short for THIS leg, overriding direction x leg ratio — used
+  // when a leg's side is set individually (single-leg or custom entries).
+  side?: LegSide;
   risk_allocated?: number;
   max_adverse_ticks?: number;
   notes?: string;
@@ -284,7 +288,7 @@ export class StructureEngine {
       id: uuid(),
       structure_leg_id: input.structure_leg_id,
       execution_type: "Entry",
-      side: sideFromRatio(leg.ratio * input.direction),
+      side: input.side ?? sideFromRatio(leg.ratio * input.direction),
       quantity: input.quantity,
       price: input.price,
       risk_allocated: input.risk_allocated,

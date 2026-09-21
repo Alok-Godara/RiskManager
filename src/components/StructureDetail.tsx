@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type { Contract, Execution, EntrySnapshot, Instrument, StructureSnapshot, StructureTemplate } from "../types/domain";
 import { EntryEngine } from "../engines/EntryEngine";
 import { StructureEngine } from "../engines/StructureEngine";
@@ -34,6 +34,17 @@ export function StructureDetail({
   const [otherExecutions, setOtherExecutions] = useState<Execution[]>([]);
   const [showAddEntry, setShowAddEntry] = useState(false);
   const [exitingEntry, setExitingEntry] = useState<EntrySnapshot | null>(null);
+  // When set, the Exit window is limited to this one leg of the entry (the per-leg Exit button).
+  const [exitingLegId, setExitingLegId] = useState<string | undefined>();
+  const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
+  function toggleEntry(id: string) {
+    setExpandedEntries((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
   const [editingEntry, setEditingEntry] = useState<EntrySnapshot | null>(null);
   const [editingExecution, setEditingExecution] = useState<Execution | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -359,28 +370,95 @@ export function StructureDetail({
         </thead>
         <tbody>
           {entries.map((en) => (
-            <tr key={en.entry_group_id}>
-              <td>{new Date(en.timestamp).toLocaleString()}</td>
-              <td className={en.side === "Long" ? "pnl-pos" : "pnl-neg"}>{en.side}</td>
-              <td>{fmtPrice(en.avg_price)}</td>
-              <td>{en.open_quantity}</td>
-              <td>{en.closed_quantity}</td>
-              <td>{en.avg_exit_price !== undefined ? fmtPrice(en.avg_exit_price) : "—"}</td>
-              <td>{en.risk_allocated ? fmtMoney(en.risk_allocated) : "—"}</td>
-              <td>{en.stop_loss_price !== undefined ? fmtPrice(en.stop_loss_price) : "—"}</td>
-              <td className={pnlClass(en.unrealized_pnl)}>{fmtMoney(en.unrealized_pnl)}</td>
-              <td className={pnlClass(en.realized_pnl)}>{fmtMoney(en.realized_pnl)}</td>
-              <td>
-                <div className="inline-actions">
-                  <button type="button" onClick={() => setEditingEntry(en)}>
-                    Edit
-                  </button>
-                  <button type="button" onClick={() => setExitingEntry(en)} disabled={en.open_quantity <= 0}>
-                    Exit
-                  </button>
-                </div>
-              </td>
-            </tr>
+            <Fragment key={en.entry_group_id}>
+              <tr
+                className="clickable"
+                onClick={() => toggleEntry(en.entry_group_id)}
+                title={expandedEntries.has(en.entry_group_id) ? "Click to hide legs" : "Click to show legs"}
+                aria-expanded={expandedEntries.has(en.entry_group_id)}
+              >
+                <td>
+                  <span className="muted" aria-hidden="true">
+                    {expandedEntries.has(en.entry_group_id) ? "▾" : "▸"}
+                  </span>{" "}
+                  {new Date(en.timestamp).toLocaleString()}
+                </td>
+                <td className={en.side === "Long" ? "pnl-pos" : en.side === "Short" ? "pnl-neg" : "muted"}>{en.side}</td>
+                <td>{fmtPrice(en.avg_price)}</td>
+                <td>
+                  {en.open_quantity}
+                  {en.kind === "custom" && <span className="muted"> leg lots</span>}
+                </td>
+                <td>{en.closed_quantity}</td>
+                <td>{en.avg_exit_price !== undefined ? fmtPrice(en.avg_exit_price) : "—"}</td>
+                <td>{en.risk_allocated ? fmtMoney(en.risk_allocated) : "—"}</td>
+                <td>{en.stop_loss_price !== undefined ? fmtPrice(en.stop_loss_price) : "—"}</td>
+                <td className={pnlClass(en.unrealized_pnl)}>{fmtMoney(en.unrealized_pnl)}</td>
+                <td className={pnlClass(en.realized_pnl)}>{fmtMoney(en.realized_pnl)}</td>
+                <td onClick={(e) => e.stopPropagation()}>
+                  <div className="inline-actions">
+                    <button type="button" onClick={() => setEditingEntry(en)}>
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExitingLegId(undefined);
+                        setExitingEntry(en);
+                      }}
+                      disabled={en.open_quantity <= 0}
+                    >
+                      Exit
+                    </button>
+                  </div>
+                </td>
+              </tr>
+              {expandedEntries.has(en.entry_group_id) && (
+                <tr>
+                  <td colSpan={11} style={{ paddingLeft: 32, background: "var(--panel-2)" }}>
+                    <table className="data-table compact">
+                      <thead>
+                        <tr>
+                          <th>Leg</th>
+                          <th>Side</th>
+                          <th>Entered</th>
+                          <th>Closed</th>
+                          <th>Open</th>
+                          <th>Entry Price</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {en.legs.map((l) => (
+                          <tr key={l.leg.id}>
+                            <td>{l.contract.month_label}</td>
+                            <td className={l.execution.side === "Long" ? "pnl-pos" : "pnl-neg"}>{l.execution.side}</td>
+                            <td>{l.entered_qty}</td>
+                            <td>{l.closed_qty}</td>
+                            <td>{l.open_qty}</td>
+                            <td>{fmtPrice(l.execution.price)}</td>
+                            <td>
+                              <div className="inline-actions">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setExitingLegId(l.leg.id);
+                                    setExitingEntry(en);
+                                  }}
+                                  disabled={l.open_qty <= 0}
+                                >
+                                  Exit
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </td>
+                </tr>
+              )}
+            </Fragment>
           ))}
           {entries.length === 0 && (
             <tr>
@@ -450,7 +528,11 @@ export function StructureDetail({
           entry={exitingEntry}
           structureId={structure.id}
           legSnapshots={legs}
-          onClose={() => setExitingEntry(null)}
+          onlyLegId={exitingLegId}
+          onClose={() => {
+            setExitingEntry(null);
+            setExitingLegId(undefined);
+          }}
           onSaved={handleChanged}
         />
       )}

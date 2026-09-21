@@ -16,6 +16,10 @@ export function EditEntryModal({
   onSaved: () => void;
 }) {
   const [structureLots, setStructureLots] = useState<number>(entry.structure_lots);
+  // Per-leg lots (editable individually; Structure Lots re-prefills them all).
+  const [legQty, setLegQty] = useState<Record<string, number>>(
+    Object.fromEntries(entry.legs.map((l) => [l.leg.id, l.execution.quantity]))
+  );
   const [legPrices, setLegPrices] = useState<Record<string, number>>(
     Object.fromEntries(entry.legs.map((l) => [l.leg.id, l.execution.price]))
   );
@@ -34,18 +38,28 @@ export function EditEntryModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
-    if (structureLots <= 0) {
-      setError("Structure lots must be greater than 0.");
+    if (!entry.legs.some((l) => (legQty[l.leg.id] ?? 0) > 0)) {
+      setError("At least one leg needs lots — use Delete Entire Entry to remove it.");
       return;
     }
     setSaving(true);
     try {
       let first = true;
       for (const l of entry.legs) {
+        const qty = legQty[l.leg.id] ?? 0;
+        if (qty <= 0) {
+          // A leg set to 0 is removed from the entry (kept in the audit trail).
+          await StructureEngine.deleteExecution({
+            execution_id: l.execution.id,
+            structure_id: structureId,
+            reason: reason || "Leg removed from entry",
+          });
+          continue;
+        }
         await StructureEngine.editExecution({
           execution_id: l.execution.id,
           structure_id: structureId,
-          quantity: Math.abs(l.leg.ratio) * structureLots,
+          quantity: qty,
           price: legPrices[l.leg.id] ?? l.execution.price,
           risk_allocated: first ? (riskAllocated === "" ? undefined : Number(riskAllocated)) : undefined,
           reason: reason || undefined,
@@ -84,22 +98,29 @@ export function EditEntryModal({
   return (
     <Modal title="Edit Entry" onClose={onClose} wide>
       <form className="form" onSubmit={handleSubmit}>
-        <div className="form-row">
-          <label>Structure Lots</label>
-          <input
-            type="number"
-            min={0}
-            step="1"
-            value={structureLots}
-            onChange={(e) => setStructureLots(Number(e.target.value))}
-          />
-        </div>
+        {entry.kind === "structure" && (
+          <div className="form-row">
+            <label>Structure Lots</label>
+            <input
+              type="number"
+              min={0}
+              step="1"
+              value={structureLots}
+              onChange={(e) => {
+                const lots = Number(e.target.value);
+                setStructureLots(lots);
+                setLegQty(Object.fromEntries(entry.legs.map((l) => [l.leg.id, Math.abs(l.leg.ratio) * lots])));
+              }}
+            />
+          </div>
+        )}
 
         <table className="data-table compact">
           <thead>
             <tr>
               <th>Leg</th>
               <th>Ratio</th>
+              <th>Side</th>
               <th>Qty (lots)</th>
               <th>Execution Price</th>
             </tr>
@@ -111,7 +132,17 @@ export function EditEntryModal({
                 <td className={l.leg.ratio >= 0 ? "pnl-pos" : "pnl-neg"}>
                   {l.leg.ratio >= 0 ? `+${l.leg.ratio}` : l.leg.ratio}
                 </td>
-                <td>{Math.abs(l.leg.ratio) * structureLots}</td>
+                <td className={l.execution.side === "Long" ? "pnl-pos" : "pnl-neg"}>{l.execution.side}</td>
+                <td>
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={legQty[l.leg.id] ?? 0}
+                    onChange={(e) => setLegQty((prev) => ({ ...prev, [l.leg.id]: Math.max(0, Number(e.target.value)) }))}
+                    style={{ width: 80 }}
+                  />
+                </td>
                 <td>
                   <input
                     type="number"
@@ -126,7 +157,7 @@ export function EditEntryModal({
           </tbody>
         </table>
         <p className="helper-text">
-          Changing Structure Lots recomputes every leg's quantity. Each leg's price stays individually editable.
+          Each leg's lots and price are individually editable (Structure Lots re-prefills every leg; a leg set to 0 is removed from the entry).
         </p>
 
         <div className="form-row">

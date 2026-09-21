@@ -10,25 +10,32 @@ import { fmtPrice } from "../utils/format";
  * Exits some/all of ONE SPECIFIC ENTRY, never any other entry on the same
  * structure — exits are entry-scoped (Execution.closes_entry_group_id, see
  * PositionEngine), not a generic "close whatever's open on this leg."
+ * `onlyLegId` limits the window to a single leg of that entry (the per-leg
+ * Exit button); each leg's lots default to what's still open on it.
  */
 export function ExitEntryModal({
   entry,
   structureId,
   legSnapshots,
+  onlyLegId,
   onClose,
   onSaved,
 }: {
   entry: EntrySnapshot;
   structureId: string;
   legSnapshots: LegSnapshot[];
+  onlyLegId?: string;
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const rows = entry.legs.map((l) => ({
-    ...l,
-    currentPrice: legSnapshots.find((s) => s.leg.id === l.leg.id)?.current_price,
-    openQty: Math.abs(l.leg.ratio) * entry.open_quantity,
-  }));
+  const rows = entry.legs
+    .filter((l) => !onlyLegId || l.leg.id === onlyLegId)
+    .map((l) => ({
+      ...l,
+      currentPrice: legSnapshots.find((s) => s.leg.id === l.leg.id)?.current_price,
+      openQty: l.open_qty,
+    }));
+  const totalOpen = rows.reduce((s, r) => s + r.openQty, 0);
 
   const [closeQty, setCloseQty] = useState<Record<string, number>>(
     Object.fromEntries(rows.map((r) => [r.leg.id, r.openQty]))
@@ -72,7 +79,7 @@ export function ExitEntryModal({
     }
   }
 
-  if (entry.open_quantity <= 0) {
+  if (totalOpen <= 0) {
     return (
       <Modal title="Exit Entry" onClose={onClose}>
         <p className="empty-hint">This entry has no open quantity left to exit.</p>
@@ -81,7 +88,17 @@ export function ExitEntryModal({
   }
 
   return (
-    <Modal title={`Exit Entry — ${entry.side} ${entry.structure_lots} lot(s) @ ${fmtPrice(entry.avg_price)}`} onClose={onClose} wide>
+    <Modal
+      title={
+        onlyLegId
+          ? `Exit Leg — ${rows[0]?.contract.month_label ?? ""} (${rows[0]?.execution.side ?? ""})`
+          : entry.kind === "structure"
+            ? `Exit Entry — ${entry.side} ${entry.structure_lots} lot(s) @ ${fmtPrice(entry.avg_price)}`
+            : `Exit Entry — custom (${entry.side})`
+      }
+      onClose={onClose}
+      wide
+    >
       <form className="form" onSubmit={handleSubmit}>
         <table className="data-table compact">
           <thead>
@@ -97,7 +114,7 @@ export function ExitEntryModal({
             {rows.map((r) => (
               <tr key={r.leg.id}>
                 <td>{r.contract.month_label}</td>
-                <td className={r.leg.ratio >= 0 ? "pnl-pos" : "pnl-neg"}>{r.openQty}</td>
+                <td className={r.execution.side === "Long" ? "pnl-pos" : "pnl-neg"}>{r.openQty}</td>
                 <td>
                   <input
                     type="number"
@@ -123,8 +140,8 @@ export function ExitEntryModal({
           </tbody>
         </table>
         <p className="helper-text">
-          Only this entry's own open quantity is affected — other entries on this structure stay untouched. Close
-          quantities default to this entry's full open amount; reduce for a partial exit.
+          Only this entry's own open lots are affected — other entries stay untouched. Lots default to what is still open;
+          reduce for a partial exit.
         </p>
 
         {error && <p className="helper-text" style={{ color: "var(--red)" }}>{error}</p>}
