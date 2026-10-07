@@ -11,6 +11,7 @@ export class PortfolioEngine {
     const snapshots = await PnLEngine.buildAllStructureSnapshots();
 
     const totalRealized = snapshots.reduce((s, snap) => s + snap.total_realized_pnl, 0);
+    const totalTransactionCost = snapshots.reduce((s, snap) => s + snap.total_transaction_cost, 0);
     const totalUnrealized = snapshots.reduce((s, snap) => s + snap.total_unrealized_pnl, 0);
     const netPnl = totalRealized + totalUnrealized;
 
@@ -25,6 +26,8 @@ export class PortfolioEngine {
 
     return {
       total_realized_pnl: totalRealized,
+      total_transaction_cost: totalTransactionCost,
+      net_realized_pnl: totalRealized - totalTransactionCost,
       total_unrealized_pnl: totalUnrealized,
       net_pnl: netPnl,
       total_dollar_risk: totalDollarRisk,

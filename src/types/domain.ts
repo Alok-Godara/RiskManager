@@ -52,6 +52,11 @@ export interface Instrument {
   // services/settlementData/client.ts). Defaults to `symbol` when unset,
   // same pattern as `exchange_code` for QuantHub.
   refdata_symbol?: string;
+  // Exchange transaction cost, $ per OUTRIGHT lot per ROUND TURN (1 buy + 1
+  // sell). The exchange charges per outright, so a spread = 2x this, a fly =
+  // 4x, a D-fly = 8x (see engines/TransactionCostEngine.ts). Falls back to the
+  // schedule default for the symbol when unset; undefined + no default = no TC.
+  tc_per_outright_rt?: number;
   tick_size: number;
   tick_value: number; // $ value per tick per lot
   lot_size: number; // barrels/units per lot
@@ -340,15 +345,18 @@ export interface LegSnapshot {
   current_price?: number;
   unrealized_pnl: number;
   market_value: number;
+  transaction_cost: number; // $ TC paid so far on this leg: half-RT rate on every active entry AND exit execution
 }
 
 export interface StructureSnapshot {
   structure: Structure;
   legs: LegSnapshot[];
-  total_realized_pnl: number;
+  total_realized_pnl: number; // GROSS: before transaction costs
   total_unrealized_pnl: number;
   total_pnl: number;
   remaining_risk_capacity: number;
+  total_transaction_cost: number; // $ TC paid so far (half-RT on each entry and exit fill)
+  net_realized_pnl: number; // total_realized_pnl - total_transaction_cost
 }
 
 // ---------------------------------------------------------------------------
@@ -397,7 +405,9 @@ export interface InstrumentNetPositionRow {
 }
 
 export interface PortfolioSummary {
-  total_realized_pnl: number;
+  total_realized_pnl: number; // GROSS: before transaction costs
+  total_transaction_cost: number;
+  net_realized_pnl: number; // gross realized - transaction costs
   total_unrealized_pnl: number;
   net_pnl: number;
   total_dollar_risk: number;

@@ -25,7 +25,8 @@ export function StructureList({
               <th>Name</th>
               <th>Type</th>
               <th>Status</th>
-              <th>Realized</th>
+              <th>Realized (Gross)</th>
+              <th>Realized (Net of TC)</th>
               <th>Unrealized</th>
               <th>Total P&L</th>
               <th>Current Risk</th>
@@ -43,6 +44,7 @@ export function StructureList({
                   </span>
                 </td>
                 <td className={pnlClass(s.total_realized_pnl)}>{fmtMoney(s.total_realized_pnl)}</td>
+                <td className={pnlClass(s.net_realized_pnl)}>{fmtMoney(s.net_realized_pnl)}</td>
                 <td className={pnlClass(s.total_unrealized_pnl)}>{fmtMoney(s.total_unrealized_pnl)}</td>
                 <td className={pnlClass(s.total_pnl)}>{fmtMoney(s.total_pnl)}</td>
                 <td>{fmtMoney(s.structure.current_dollar_risk)}</td>
@@ -51,7 +53,7 @@ export function StructureList({
             ))}
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={8} className="muted">
+                <td colSpan={9} className="muted">
                   No structures yet — click + New Structure above.
                 </td>
               </tr>

@@ -4,8 +4,19 @@ import type {
   Structure,
   LegSnapshot,
   StructureSnapshot,
+  Execution,
+  StructureTemplate,
+  UUID,
 } from "../types/domain";
 import { repository } from "../data";
+import { TransactionCostEngine } from "./TransactionCostEngine";
+
+/** Reference data shared across every structure in one snapshot pass, fetched once instead of per structure/leg. */
+interface TcContext {
+  instrumentsById: Map<UUID, Instrument>;
+  templatesById: Map<UUID, StructureTemplate>;
+  executionsByLeg: Map<UUID, Execution[]>;
+}
 
 /**
  * PnLEngine: computes realized, unrealized, and total P&L at the entry,
@@ -33,7 +44,7 @@ export class PnLEngine {
   }
 
   /** Build a full snapshot for one structure: legs, positions, live P&L, risk headroom. */
-  static async buildStructureSnapshot(structure: Structure): Promise<StructureSnapshot> {
+  static async buildStructureSnapshot(structure: Structure, tcContext?: TcContext): Promise<StructureSnapshot> {
     const legs = await repository.getLegsByStructure(structure.id);
     const instrument = await repository.getInstrument(structure.instrument_id);
 
@@ -53,6 +64,13 @@ export class PnLEngine {
         } as Position);
       const marketPrice = await repository.getMarketPrice(leg.contract_id);
 
+      // Transaction cost: half the round-turn rate on every active fill (entry
+      // and exit). The rate comes from the LEG's own contract's instrument.
+      const legExecutions = tcContext ? (tcContext.executionsByLeg.get(leg.id) ?? []) : await repository.getExecutionsByLeg(leg.id);
+      const legInstrument = tcContext?.instrumentsById.get(contract.instrument_id) ?? (await repository.getInstrument(contract.instrument_id));
+      const templatesById = tcContext?.templatesById ?? new Map((await repository.getStructureTemplates()).map((t) => [t.id, t]));
+      const transactionCost = TransactionCostEngine.legCost(legExecutions, contract, legInstrument, templatesById);
+
       const unrealized = instrument
         ? this.unrealizedPnl(position, marketPrice?.price, instrument)
         : 0;
@@ -64,12 +82,14 @@ export class PnLEngine {
         current_price: marketPrice?.price,
         unrealized_pnl: unrealized,
         market_value: this.marketValue(position, marketPrice?.price),
+        transaction_cost: transactionCost,
       });
     }
 
     const totalRealized = legSnapshots.reduce((s, l) => s + l.position.realized_pnl, 0);
     const totalUnrealized = legSnapshots.reduce((s, l) => s + l.unrealized_pnl, 0);
     const totalPnl = totalRealized + totalUnrealized;
+    const totalTransactionCost = legSnapshots.reduce((s, l) => s + l.transaction_cost, 0);
 
     const remainingRiskCapacity = structure.current_dollar_risk + totalPnl;
 
@@ -80,14 +100,32 @@ export class PnLEngine {
       total_unrealized_pnl: totalUnrealized,
       total_pnl: totalPnl,
       remaining_risk_capacity: remainingRiskCapacity,
+      total_transaction_cost: totalTransactionCost,
+      net_realized_pnl: totalRealized - totalTransactionCost,
     };
   }
 
   static async buildAllStructureSnapshots(): Promise<StructureSnapshot[]> {
-    const structures = await repository.getStructures();
+    const [structures, instruments, templates, executions] = await Promise.all([
+      repository.getStructures(),
+      repository.getInstruments(),
+      repository.getStructureTemplates(),
+      repository.getAllExecutions(),
+    ]);
+    const executionsByLeg = new Map<UUID, Execution[]>();
+    for (const e of executions) {
+      const list = executionsByLeg.get(e.structure_leg_id) ?? [];
+      list.push(e);
+      executionsByLeg.set(e.structure_leg_id, list);
+    }
+    const tcContext: TcContext = {
+      instrumentsById: new Map(instruments.map((i) => [i.id, i])),
+      templatesById: new Map(templates.map((t) => [t.id, t])),
+      executionsByLeg,
+    };
     const snapshots: StructureSnapshot[] = [];
     for (const s of structures) {
-      snapshots.push(await this.buildStructureSnapshot(s));
+      snapshots.push(await this.buildStructureSnapshot(s, tcContext));
     }
     return snapshots;
   }

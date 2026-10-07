@@ -8,6 +8,7 @@ import { fmtMoney, fmtPrice, pnlClass } from "../utils/format";
 import { IconChevronLeft, IconPencil } from "./icons";
 import { AddEntryModal } from "./AddEntryModal";
 import { ExitEntryModal } from "./ExitEntryModal";
+import { InfoTip } from "./InfoTip";
 import { EditEntryModal } from "./EditEntryModal";
 import { EditExecutionModal } from "./EditExecutionModal";
 
@@ -221,8 +222,24 @@ export function StructureDetail({
 
       <div className="card-grid">
         <div className="stat-card">
-          <div className="stat-label">Realized P&amp;L</div>
+          <div className="stat-label">
+            Realized P&amp;L (Gross){" "}
+            <InfoTip>Profit or loss booked on exited lots, before any transaction costs.</InfoTip>
+          </div>
           <div className={`stat-value ${pnlClass(snapshot.total_realized_pnl)}`}>{fmtMoney(snapshot.total_realized_pnl)}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">
+            Realized P&amp;L (Net of TC){" "}
+            <InfoTip>
+              Gross realized P&amp;L minus the exchange transaction costs paid so far. The exchange charges per outright lot: half
+              the round-turn rate when a lot is entered and half when it is exited, so a still-open lot has already paid its
+              entry half. A spread counts as 2 outrights, a fly as 4, a D-fly as 8. Rates are set per instrument in
+              Settings → Instruments. Rebates are not included.
+            </InfoTip>
+          </div>
+          <div className={`stat-value ${pnlClass(snapshot.net_realized_pnl)}`}>{fmtMoney(snapshot.net_realized_pnl)}</div>
+          <div className="stat-sub">TC paid: {fmtMoney(snapshot.total_transaction_cost)}</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Unrealized P&amp;L</div>

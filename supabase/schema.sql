@@ -29,6 +29,7 @@ create table if not exists instruments (
   name text not null,
   exchange_code text,
   refdata_symbol text,
+  tc_per_outright_rt double precision,
   tick_size double precision not null,
   tick_value double precision not null,
   lot_size double precision not null,

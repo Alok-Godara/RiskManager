@@ -1,5 +1,6 @@
 import type { PortfolioSummary } from "../types/domain";
 import { fmtMoney, pnlClass } from "../utils/format";
+import { InfoTip } from "./InfoTip";
 
 export function PortfolioDashboard({ summary }: { summary: PortfolioSummary | null }) {
   if (!summary) return <div className="panel">Loading portfolio…</div>;
@@ -16,10 +17,21 @@ export function PortfolioDashboard({ summary }: { summary: PortfolioSummary | nu
       <div className="section-label">Profit &amp; Loss</div>
       <div className="card-grid">
         <div className="stat-card">
-          <div className="stat-label">Realized P&amp;L</div>
+          <div className="stat-label">Realized P&amp;L (Gross)</div>
           <div className={`stat-value ${pnlClass(summary.total_realized_pnl)}`}>
             {fmtMoney(summary.total_realized_pnl)}
           </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">
+            Realized P&amp;L (Net of TC){" "}
+            <InfoTip>
+              Gross realized P&amp;L minus transaction costs paid so far across all structures (half the round-turn rate on every
+              entry and exit fill, per outright lot). Rates: Settings → Instruments.
+            </InfoTip>
+          </div>
+          <div className={`stat-value ${pnlClass(summary.net_realized_pnl)}`}>{fmtMoney(summary.net_realized_pnl)}</div>
+          <div className="stat-sub">TC paid: {fmtMoney(summary.total_transaction_cost)}</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Unrealized P&amp;L</div>

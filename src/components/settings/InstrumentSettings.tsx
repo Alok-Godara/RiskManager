@@ -5,12 +5,14 @@ import { repository } from "../../data";
 import { Modal } from "../Modal";
 import { buildRollingContracts } from "../../utils/contractGen";
 import { logAudit } from "../../utils/auditLog";
+import { DEFAULT_TC_PER_OUTRIGHT_RT, TransactionCostEngine } from "../../engines/TransactionCostEngine";
 
 interface FormState {
   name: string;
   symbol: string;
   exchange_code: string;
   refdata_symbol: string;
+  tc_per_outright_rt: number | "";
   tick_size: number;
   tick_value: number;
   lot_size: number;
@@ -25,6 +27,7 @@ function blankForm(): FormState {
     symbol: "",
     exchange_code: "",
     refdata_symbol: "",
+    tc_per_outright_rt: "",
     tick_size: 0.01,
     tick_value: 10,
     lot_size: 1000,
@@ -59,6 +62,7 @@ export function InstrumentSettings({
       symbol: inst.symbol,
       exchange_code: inst.exchange_code ?? "",
       refdata_symbol: inst.refdata_symbol ?? "",
+      tc_per_outright_rt: inst.tc_per_outright_rt ?? "",
       tick_size: inst.tick_size,
       tick_value: inst.tick_value,
       lot_size: inst.lot_size,
@@ -107,6 +111,7 @@ export function InstrumentSettings({
         symbol: form.symbol.toUpperCase(),
         exchange_code: form.exchange_code || undefined,
         refdata_symbol: form.refdata_symbol || undefined,
+        tc_per_outright_rt: form.tc_per_outright_rt === "" ? undefined : form.tc_per_outright_rt,
         tick_size: form.tick_size,
         tick_value: form.tick_value,
         lot_size: form.lot_size,
@@ -140,6 +145,7 @@ export function InstrumentSettings({
         symbol: form.symbol.toUpperCase(),
         exchange_code: form.exchange_code || undefined,
         refdata_symbol: form.refdata_symbol || undefined,
+        tc_per_outright_rt: form.tc_per_outright_rt === "" ? undefined : form.tc_per_outright_rt,
         tick_size: form.tick_size,
         tick_value: form.tick_value,
         lot_size: form.lot_size,
@@ -208,6 +214,22 @@ export function InstrumentSettings({
         </div>
       </div>
       <div className="form-row">
+        <label>Transaction Cost ($ per outright lot, per round turn)</label>
+        <input
+          type="number"
+          step="0.01"
+          min="0"
+          value={form.tc_per_outright_rt}
+          onChange={(e) => setForm({ ...form, tc_per_outright_rt: e.target.value === "" ? "" : Number(e.target.value) })}
+          placeholder={`Default: ${DEFAULT_TC_PER_OUTRIGHT_RT[form.symbol.trim().toUpperCase()] ?? "none"}`}
+        />
+        <p className="helper-text">
+          The exchange charges per outright, so a spread costs 2× this, a fly 4×, a D-fly 8×. Half is charged when a lot is
+          entered and half when it is exited. Leave blank to use the schedule default for the symbol (CL / BZ 1.78, BRN 1.90,
+          WBS 2.04, GO 2.10); instruments with no default and no value are charged nothing.
+        </p>
+      </div>
+      <div className="form-row">
         <label>Notes (optional)</label>
         <input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
       </div>
@@ -249,6 +271,7 @@ export function InstrumentSettings({
             <th>Tick Size</th>
             <th>Tick Value</th>
             <th>Lot Size</th>
+            <th>TC / Outright (RT)</th>
             <th>Active</th>
             <th></th>
           </tr>
@@ -262,6 +285,12 @@ export function InstrumentSettings({
               <td>{inst.tick_size}</td>
               <td>{inst.tick_value}</td>
               <td>{inst.lot_size}</td>
+              <td>
+                {(() => {
+                  const rate = TransactionCostEngine.ratePerOutrightRT(inst);
+                  return rate > 0 ? `${rate.toFixed(2)}${inst.tc_per_outright_rt === undefined ? " (default)" : ""}` : "—";
+                })()}
+              </td>
               <td>
                 <button
                   type="button"
@@ -284,7 +313,7 @@ export function InstrumentSettings({
           ))}
           {instruments.length === 0 && (
             <tr>
-              <td colSpan={8} className="muted">
+              <td colSpan={9} className="muted">
                 No instruments yet — add one above.
               </td>
             </tr>
