@@ -138,6 +138,7 @@ export function CorrelationPanel({
     openStructureCount,
     netExposureByContract,
     touchedContractIds,
+    valueAtRisk,
     refresh,
   } = usePortfolioCorrelation(snapshots, contracts, templates, instruments);
 
@@ -268,6 +269,83 @@ export function CorrelationPanel({
               ))}
             </tbody>
           </table>
+        </>
+      )}
+
+      {exposureRows.length > 0 && !loading && !valueAtRisk && (
+        <p className="helper-text">Value at Risk needs a few days of settlement prices for every month you hold — not available yet.</p>
+      )}
+
+      {valueAtRisk && (
+        <>
+          <div className="card-grid">
+            <div className="stat-card">
+              <div className="stat-label">
+                Value at Risk (1 day, {(valueAtRisk.confidence * 100).toFixed(0)}%)
+                <InfoTip>
+                  The most your book is likely to lose OR make in one day, from your NET position. How it is worked out: your
+                  net lots in each delivery month (hedged months drop out) are turned into dollars per 1.00 price move; the
+                  last {valueAtRisk.lookback_days} trading days of settlement prices give each month's daily price changes;
+                  the covariance of those changes across all months captures what offsets and what stacks; the book's daily
+                  standard deviation is then √(lots × covariance × lots), and VaR = {valueAtRisk.z_score.toFixed(3)} × that
+                  (the multiplier for {(valueAtRisk.confidence * 100).toFixed(0)}% confidence, both directions). So on about{" "}
+                  {(valueAtRisk.confidence * 100).toFixed(0)}% of days your P&amp;L should stay inside ± this figure. It is a
+                  typical-move number from recent history, not a worst case.
+                </InfoTip>
+              </div>
+              <div className="stat-value">±{fmtMoney(valueAtRisk.value_at_risk)}</div>
+              <div className="stat-sub">
+                {fmtMoney(-valueAtRisk.value_at_risk)} to +{fmtMoney(valueAtRisk.value_at_risk)} in a day
+              </div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">
+                Daily Swing (1 std dev)
+                <InfoTip>
+                  One standard deviation of the book's daily P&amp;L over the last {valueAtRisk.observations} daily changes ({valueAtRisk.start_date} →{" "}
+                  {valueAtRisk.end_date}) — the figure VaR is built from (VaR = {valueAtRisk.z_score.toFixed(3)} × this).
+                </InfoTip>
+              </div>
+              <div className="stat-value">{fmtMoney(valueAtRisk.daily_std_dev)}</div>
+              <div className="stat-sub">{valueAtRisk.observations} trading-day changes</div>
+            </div>
+          </div>
+
+          <details style={{ margin: "4px 0 16px" }}>
+            <summary style={{ cursor: "pointer", fontSize: "0.82rem" }}>VaR by delivery month</summary>
+            <table className="data-table compact" style={{ marginTop: 8 }}>
+              <thead>
+                <tr>
+                  <th>Contract</th>
+                  <th>
+                    Net Lots
+                    <InfoTip>Your net position in this month across all structures. + = Long, − = Short.</InfoTip>
+                  </th>
+                  <th>
+                    VaR Contribution
+                    <InfoTip align="right">
+                      How much of the total VaR this month is responsible for, including how it moves with the other months.
+                      The column adds up to the VaR above; a negative number means this month offsets the rest of the book.
+                    </InfoTip>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...valueAtRisk.contributions]
+                  .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
+                  .map((c) => (
+                    <tr key={c.contract_id}>
+                      <td>
+                        {instrumentSymbolById.get(contractsById.get(c.contract_id)?.instrument_id ?? "") ?? "—"}{" "}
+                        {contractsById.get(c.contract_id)?.month_label ?? "—"}
+                      </td>
+                      <td className={lotsClass(c.net_lots)}>{fmtLots(c.net_lots)}</td>
+                      <td className={c.contribution < 0 ? "pnl-pos" : ""}>{fmtMoney(c.contribution)}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </details>
         </>
       )}
 

@@ -9,10 +9,20 @@ import type {
   StructureTemplate,
   SettlementPrice,
   UUID,
+  ValueAtRiskResult,
   WindowCorrelation,
 } from "../types/domain";
 import { CORRELATION_WINDOWS } from "../types/domain";
 import { expandToOutrights } from "../utils/templateExpansion";
+
+/** Value at Risk look-back, in trading days of settlement prices. */
+export const VAR_LOOKBACK_DAYS = 90;
+/**
+ * Value at Risk confidence — two-sided: the share of days the book's P&L is
+ * expected to land within +/- VaR. 66% => z = 0.954, i.e. roughly one standard
+ * deviation of the daily P&L (the quant team's convention).
+ */
+export const VAR_CONFIDENCE = 0.66;
 
 export interface LegWeight {
   contract_id: UUID;
@@ -214,6 +224,107 @@ export class CorrelationEngine {
       if (complete) series.push({ date, value });
     }
     return series;
+  }
+
+  /** Inverse of the standard normal CDF (Acklam's rational approximation, |error| < 1.2e-9). */
+  static normalInverse(p: number): number {
+    if (!(p > 0 && p < 1)) return NaN;
+    const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.357751867269, -30.66479806614716, 2.506628277459239];
+    const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572];
+    const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
+    const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996, 3.754408661907416];
+    const pLow = 0.02425;
+    if (p < pLow) {
+      const q = Math.sqrt(-2 * Math.log(p));
+      return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+    }
+    if (p > 1 - pLow) return -this.normalInverse(1 - p);
+    const q = p - 0.5;
+    const r = q * q;
+    return ((((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q) / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+  }
+
+  /**
+   * Value at Risk of the book's NET position (the quant team's method):
+   *
+   *   1. Take the net signed lots held in each outright delivery month
+   *      (every open structure decomposed and added up — hedged months
+   *      drop out) and convert to $ per 1.00 price move (lots x tick_value /
+   *      tick_size).
+   *   2. Take the last `lookbackDays` trading days of settlement prices, on
+   *      the dates every held month has a price, and form the daily price
+   *      CHANGES per month.
+   *   3. Covariance matrix of those daily changes across months (sample, n-1).
+   *   4. The book's one-day P&L variance is w' x Cov x w with w the $ weights,
+   *      so its standard deviation is sqrt(w' Cov w) — offsetting months
+   *      cancel through the covariances, unrelated ones add in quadrature.
+   *   5. VaR = z x that standard deviation, z being the two-sided normal
+   *      multiplier for `confidence` (66% => 0.954). Read: on ~66% of days the
+   *      book's P&L stays within +/- VaR — "the most you would lose OR make".
+   *
+   * Assumes P&L has zero mean and is roughly normal, and that the recent
+   * window is representative; it is a typical-move figure, not a worst case.
+   * Each month's contribution is z x w_i x (Cov w)_i / sigma, which sums
+   * exactly to VaR; a negative one means that month hedges the rest.
+   * Undefined if nothing is held or fewer than 3 common dates exist.
+   */
+  static valueAtRisk(input: {
+    lotsByContract: Map<UUID, number>;
+    dollarPerUnitByContract: Map<UUID, number>;
+    tradingDates: string[];
+    settlements: SettlementPrice[];
+    lookbackDays?: number;
+    confidence?: number;
+  }): ValueAtRiskResult | undefined {
+    const lookback = input.lookbackDays ?? VAR_LOOKBACK_DAYS;
+    const confidence = input.confidence ?? VAR_CONFIDENCE;
+    const held = Array.from(input.lotsByContract.entries()).filter(([, lots]) => Math.abs(lots) > 1e-9);
+    if (held.length === 0) return undefined;
+    const ids = held.map(([id]) => id);
+
+    const priceByKey = new Map(input.settlements.map((s) => [`${s.contract_id}::${s.date}`, s.price]));
+    const dates = input.tradingDates
+      .filter((d) => ids.every((id) => priceByKey.has(`${id}::${d}`)))
+      .sort()
+      .slice(-lookback);
+    if (dates.length < 3) return undefined;
+
+    const n = dates.length - 1; // daily changes
+    const changes = ids.map((id) => {
+      const out: number[] = [];
+      for (let t = 1; t < dates.length; t++) out.push(priceByKey.get(`${id}::${dates[t]}`)! - priceByKey.get(`${id}::${dates[t - 1]}`)!);
+      return out;
+    });
+    const means = changes.map((row) => row.reduce((s, x) => s + x, 0) / n);
+    const cov = ids.map((_, i) =>
+      ids.map((__, j) => {
+        let sum = 0;
+        for (let t = 0; t < n; t++) sum += (changes[i][t] - means[i]) * (changes[j][t] - means[j]);
+        return sum / (n - 1);
+      })
+    );
+
+    const w = held.map(([id, lots]) => lots * (input.dollarPerUnitByContract.get(id) ?? 1));
+    const covW = cov.map((row) => row.reduce((s, c, j) => s + c * w[j], 0)); // (Cov w)_i
+    const variance = w.reduce((s, wi, i) => s + wi * covW[i], 0);
+    const sigma = Math.sqrt(Math.max(0, variance));
+    const z = this.normalInverse((1 + confidence) / 2);
+
+    return {
+      value_at_risk: z * sigma,
+      daily_std_dev: sigma,
+      confidence,
+      z_score: z,
+      lookback_days: lookback,
+      observations: n,
+      start_date: dates[0],
+      end_date: dates[dates.length - 1],
+      contributions: held.map(([id, lots], i) => ({
+        contract_id: id,
+        net_lots: lots,
+        contribution: sigma > 0 ? (z * w[i] * covW[i]) / sigma : 0,
+      })),
+    };
   }
 
   /** Day-over-day changes, keyed by the LATER date of each pair. */

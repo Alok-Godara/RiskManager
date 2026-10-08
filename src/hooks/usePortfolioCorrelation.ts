@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Contract, CorrelationWindow, Instrument, PortfolioConcentrationAnalysis, StructureSnapshot, StructureTemplate, UUID } from "../types/domain";
+import type { Contract, CorrelationWindow, Instrument, PortfolioConcentrationAnalysis, StructureSnapshot, StructureTemplate, UUID, ValueAtRiskResult } from "../types/domain";
 import { CORRELATION_WINDOWS } from "../types/domain";
-import { CorrelationEngine, type DailySeriesPoint } from "../engines/CorrelationEngine";
+import { CorrelationEngine, VAR_LOOKBACK_DAYS, type DailySeriesPoint } from "../engines/CorrelationEngine";
 import { buildCorrelationContext, getCorrelationSettings, historyTradingDaysFor } from "../services/settlementData/correlationContext";
 
 /** Settlements publish once/day — this just picks up a newly-published one without a manual reload. */
@@ -27,6 +27,8 @@ export interface PortfolioCorrelationState {
   netExposureByContract: Record<UUID, number>;
   /** Contracts touched by any open structure, including ones that net to exactly zero (fully hedged). */
   touchedContractIds: UUID[];
+  /** Value at Risk of the whole book's NET position (CorrelationEngine.valueAtRisk); undefined if nothing is held or there isn't enough settlement history yet. */
+  valueAtRisk: ValueAtRiskResult | undefined;
   refresh: () => void;
 }
 
@@ -60,6 +62,7 @@ export function usePortfolioCorrelation(
   const [rollingWindows, setRollingWindows] = useState<Record<CorrelationWindow, number>>({ 30: 10, 60: 20, 90: 30 });
   const [netExposureByContract, setNetExposureByContract] = useState<Record<UUID, number>>({});
   const [touchedContractIds, setTouchedContractIds] = useState<UUID[]>([]);
+  const [valueAtRisk, setValueAtRisk] = useState<ValueAtRiskResult | undefined>();
   const [nonce, setNonce] = useState(0);
 
   const openStructures = useMemo(() => snapshots.filter((s) => s.structure.status !== "Fully Closed"), [snapshots]);
@@ -103,7 +106,10 @@ export function usePortfolioCorrelation(
           structure: s.structure,
           legs: s.legs.map((l) => ({ contract_id: l.leg.contract_id, ratio: l.leg.ratio, net_quantity: l.position.net_quantity })),
         }));
-        const context = await buildCorrelationContext(withLegs, contracts, templates, instruments, historyTradingDaysFor(settings.periods));
+        // At least VAR_LOOKBACK_DAYS + 1 days of history, so Value at Risk always has its full 90-day window
+        // (one extra: N daily changes need N + 1 prices) even if the correlation periods are configured shorter.
+        const historyDays = Math.max(historyTradingDaysFor(settings.periods), VAR_LOOKBACK_DAYS + 1);
+        const context = await buildCorrelationContext(withLegs, contracts, templates, instruments, historyDays);
         if (cancelled) return;
 
         // Actual open lots per structure, not current_dollar_risk — see
@@ -129,6 +135,22 @@ export function usePortfolioCorrelation(
         setPositionDollarSeriesByStructureId(Object.fromEntries(context.openStructures.map((s) => [s.structure.id, s.positionDollarSeries])));
         setOutrightWeightsByStructureId(Object.fromEntries(context.openStructures.map((s) => [s.structure.id, s.outrightWeights])));
         setNetExposureByContract(Object.fromEntries(context.netExposureByContract));
+
+        // Value at Risk from the NET lots per outright month: $ per 1.00 price move = tick_value / tick_size of each month's instrument.
+        const instrumentsById = new Map(instruments.map((i) => [i.id, i]));
+        const dollarPerUnitByContract = new Map<UUID, number>();
+        for (const id of context.netExposureByContract.keys()) {
+          const instrument = instrumentsById.get(context.contractsById.get(id)?.instrument_id ?? "");
+          dollarPerUnitByContract.set(id, instrument ? instrument.tick_value / instrument.tick_size : 1);
+        }
+        setValueAtRisk(
+          CorrelationEngine.valueAtRisk({
+            lotsByContract: context.netExposureByContract,
+            dollarPerUnitByContract,
+            tradingDates: context.tradingDates,
+            settlements: context.settlements,
+          })
+        );
         setTouchedContractIds(Array.from(context.touchedContractIds));
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to compute correlation analysis");
@@ -161,6 +183,7 @@ export function usePortfolioCorrelation(
     openStructureCount: openStructures.length,
     netExposureByContract,
     touchedContractIds,
+    valueAtRisk,
     refresh: () => setNonce((n) => n + 1),
   };
 }

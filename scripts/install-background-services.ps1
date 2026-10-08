@@ -45,8 +45,11 @@ function Install-Service($taskName, $launcherFile, $description, $processPattern
   }
   Start-Sleep -Seconds 1
 
-  $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-NoProfile -WindowStyle Hidden -Command `"& '$launcher'`"" `
+  # wscript + hidden-launch.vbs: runs the launcher with no window at all (a
+  # visible console would also get closed by accident and kill the service).
+  $vbs = Join-Path $PSScriptRoot "hidden-launch.vbs"
+  $action = New-ScheduledTaskAction -Execute "wscript.exe" `
+    -Argument "//B //Nologo `"$vbs`" `"$launcher`"" `
     -WorkingDirectory $root
   # At logon, plus a 5-minute watchdog: if the process (or its console) is ever
   # killed, the next tick starts it again; while it runs, ticks are ignored

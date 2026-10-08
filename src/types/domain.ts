@@ -457,6 +457,26 @@ export interface NewTradeCorrelationAnalysis {
   warnings: string[];
 }
 
+// ---------------------------------------------------------------------------
+// Value at Risk of the whole book's NET position — see
+// CorrelationEngine.valueAtRisk for the exact method.
+// ---------------------------------------------------------------------------
+export interface ValueAtRiskResult {
+  value_at_risk: number; // $ — one-day P&L stays within +/- this at `confidence`
+  daily_std_dev: number; // $ — one standard deviation of the book's one-day P&L, sqrt(lots' x Cov x lots)
+  confidence: number; // 0..1, two-sided
+  z_score: number; // multiplier on daily_std_dev for that confidence
+  lookback_days: number; // trading days of settlements requested
+  observations: number; // daily changes actually used (common dates across every contract held)
+  start_date: string;
+  end_date: string;
+  contributions: {
+    contract_id: UUID;
+    net_lots: number;
+    contribution: number; // $ share of value_at_risk (negative = this month hedges the rest); sums to value_at_risk
+  }[];
+}
+
 export interface PortfolioConcentrationAnalysis {
   window: CorrelationWindow;
   pairs: StructurePairCorrelation[];
