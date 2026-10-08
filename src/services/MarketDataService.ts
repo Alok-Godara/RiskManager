@@ -88,8 +88,19 @@ export interface MarketDataStatus {
 type Listener = () => void;
 
 /**
+ * Appended to the `source` of every price the background price worker
+ * (src/worker/priceWorker.ts) writes. A browser tab that sees a price with
+ * this tag written in the last WORKER_FRESH_MS knows the worker is alive and
+ * skips its own QuantHub request — QuantHub's request budget (30/minute, see
+ * services/quantHub/client.ts) is per token, so the worker and every open tab
+ * polling at once would just eat into each other's allowance.
+ */
+export const WORKER_SOURCE_TAG = " [worker]";
+const WORKER_FRESH_MS = 30_000;
+
+/**
  * Backoff bounds for rate-limit cooldowns (see asRateLimitSignal). QuantHub
- * allows ~10 requests/minute per token on /apis/ohlc/ (see
+ * allows 30 requests/minute per token on /apis/ohlc/ (see
  * QUANTHUB_RATE_LIMIT_PER_MINUTE); polling above that budget gets a 429, and
  * live testing on the old (50/min) endpoint showed recovery can take over
  * 90s of complete silence — so the cap here is deliberately generous rather
@@ -118,14 +129,15 @@ function asRateLimitSignal(err: unknown): RateLimitSignal | undefined {
 
 /**
  * MarketDataService: the ONLY place that knows how prices are fetched.
- * Today it runs a setInterval in the browser. When deployed online, this
- * same class's fetch/update logic can move into a background worker or
- * server process — the rest of the app (engines, UI) reads prices only
- * through the DataRepository and is unaffected by where fetching runs.
+ * It runs in two places: inside each browser tab, and in the headless
+ * background price worker (src/worker/priceWorker.ts), which keeps prices
+ * updating with no browser open. The rest of the app (engines, UI) reads
+ * prices only through the DataRepository and is unaffected by where
+ * fetching runs.
  */
 class MarketDataServiceImpl {
   private provider: MarketDataProvider = new SimulatedProvider();
-  private intervalId: number | null = null;
+  private intervalId: ReturnType<typeof setInterval> | null = null;
   private listeners = new Set<Listener>();
   private statusListeners = new Set<Listener>();
   private pollMs = 4000;
@@ -138,6 +150,29 @@ class MarketDataServiceImpl {
   /** Epoch ms — ticks are skipped until this passes (see asRateLimitSignal). */
   private cooldownUntil = 0;
   private consecutiveRateLimits = 0;
+  /** Appended to each stored price's `source` (the worker sets WORKER_SOURCE_TAG). */
+  private sourceTag = "";
+  /** Browser tabs: skip our own fetch while the background worker is keeping prices fresh. */
+  private deferToWorker = false;
+
+  setSourceTag(tag: string) {
+    this.sourceTag = tag;
+  }
+
+  setDeferToWorker(defer: boolean) {
+    this.deferToWorker = defer;
+  }
+
+  /** The prices the background worker wrote within the last WORKER_FRESH_MS — empty if it isn't (visibly) running. */
+  private async freshWorkerPrices(): Promise<MarketPrice[]> {
+    try {
+      const prices = await repository.getMarketPrices();
+      const now = Date.now();
+      return prices.filter((p) => p.source.endsWith(WORKER_SOURCE_TAG) && now - Date.parse(p.timestamp) < WORKER_FRESH_MS);
+    } catch {
+      return [];
+    }
+  }
 
   setProvider(provider: MarketDataProvider) {
     this.provider = provider;
@@ -196,7 +231,7 @@ class MarketDataServiceImpl {
           price: quote.price,
           bid: quote.bid,
           ask: quote.ask,
-          source: quote.source ?? this.provider.name,
+          source: (quote.source ?? this.provider.name) + this.sourceTag,
           timestamp,
         };
         await repository.upsertMarketPrice(marketPrice);
@@ -281,6 +316,26 @@ class MarketDataServiceImpl {
       if (Date.now() < this.cooldownUntil) return;
       busy = true;
       try {
+        // The worker is already polling QuantHub: don't spend the rate-limit
+        // budget twice — just tell the UI to re-read the fresh prices.
+        if (this.deferToWorker) {
+          const fresh = await this.freshWorkerPrices();
+          if (fresh.length > 0) {
+            // Report the worker's feed as this tab's feed health, so the
+            // sidebar shows "Live" instead of a stuck "waiting" state.
+            const newest = fresh.reduce((a, b) => (Date.parse(b.timestamp) > Date.parse(a.timestamp) ? b : a));
+            this.setStatus({
+              providerName: this.provider.name,
+              state: "ok",
+              lastSuccessAt: newest.timestamp,
+              quoteAsOf: newest.timestamp,
+              pricedCount: fresh.length,
+              requestedCount: fresh.length,
+            });
+            this.notify();
+            return;
+          }
+        }
         const contracts = await getRequiredContracts();
         await this.refresh(contracts);
       } catch (err) {
@@ -290,12 +345,12 @@ class MarketDataServiceImpl {
       }
     };
     tick();
-    this.intervalId = window.setInterval(tick, this.pollMs);
+    this.intervalId = setInterval(tick, this.pollMs);
   }
 
   stop() {
     if (this.intervalId !== null) {
-      window.clearInterval(this.intervalId);
+      clearInterval(this.intervalId);
       this.intervalId = null;
     }
   }

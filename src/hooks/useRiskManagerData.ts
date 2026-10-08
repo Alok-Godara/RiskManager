@@ -3,8 +3,9 @@ import { repository, isCloudConfigured } from "../data";
 import { seedIfEmpty } from "../data/seed";
 import { runMigrations } from "../data/migrate";
 import { MarketDataService } from "../services/MarketDataService";
+import { getRequiredContracts } from "../services/requiredContracts";
 import { QuantHubProvider } from "../services/quantHub/QuantHubProvider";
-import { QUANTHUB_RATE_LIMIT_PER_MINUTE } from "../services/quantHub/client";
+import { QUANTHUB_BROWSER_REQUESTS_PER_MINUTE, quantHubPollIntervalMs } from "../services/quantHub/client";
 import { PnLEngine } from "../engines/PnLEngine";
 import { PortfolioEngine } from "../engines/PortfolioEngine";
 import type {
@@ -62,23 +63,20 @@ export function useRiskManagerData() {
       // Start continuous market data polling for exactly the contracts
       // required by currently open positions (spec section 3).
       //
-      // QuantHub allows ~10 requests/minute per token on /apis/ohlc/. Each
-      // poll tick is one OHLC request in the common case — all required
-      // contracts fit in a single batch of <= MAX_INSTRUMENTS_PER_REQUEST
-      // (50) — so we poll as close to that budget as is safe rather than an
-      // arbitrary cadence: 60s / 10 requests = 6000ms at the ceiling; add a
-      // margin for jitter (double-invoked effects, clock drift) rather than
-      // sitting exactly on the limit. MarketDataService still backs off
-      // gracefully if a 429 slips through anyway. See Settings -> API
-      // Configuration for feed health.
-      const quantHubPollMs = Math.ceil(60_000 / QUANTHUB_RATE_LIMIT_PER_MINUTE) + 100;
-      MarketDataService.start(async () => {
-        const legs = await repository.getAllLegs();
-        const activeLegs = legs.filter((l) => l.is_active);
-        const contractIds = new Set(activeLegs.map((l) => l.contract_id));
-        const allContracts = await repository.getContracts();
-        return allContracts.filter((c) => contractIds.has(c.id));
-      }, __QH_CONFIGURED__ ? quantHubPollMs : 4000);
+      // QuantHub's /apis/ohlc/ allows 30 requests/minute per token (see
+      // services/quantHub/client.ts). Each poll tick is one OHLC request in
+      // the common case — all required contracts fit in a single batch of
+      // <= MAX_INSTRUMENTS_PER_REQUEST (50) — and a tab aims for 10/minute of
+      // that, leaving room for the background worker and other viewers on the
+      // same token. MarketDataService still backs off gracefully if a 429
+      // slips through anyway. See Settings -> API Configuration for feed health.
+      const quantHubPollMs = quantHubPollIntervalMs(QUANTHUB_BROWSER_REQUESTS_PER_MINUTE);
+      //
+      // If the background price worker is running (see src/worker/), it
+      // already holds the QuantHub budget — this tab then only re-reads the
+      // prices it stores instead of also hitting QuantHub.
+      MarketDataService.setDeferToWorker(true);
+      MarketDataService.start(getRequiredContracts, __QH_CONFIGURED__ ? quantHubPollMs : 4000);
 
       unsub = MarketDataService.onUpdate(() => {
         reload();

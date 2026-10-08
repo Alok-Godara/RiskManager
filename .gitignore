@@ -9,3 +9,6 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+# Background price worker build output and logs
+dist-worker/
+logs/

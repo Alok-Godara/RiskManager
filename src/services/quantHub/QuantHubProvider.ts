@@ -141,9 +141,8 @@ export class QuantHubProvider implements MarketDataProvider {
     if (codes.length === 0) return {};
 
     // One request per 50 codes, SEQUENTIALLY and spaced at least
-    // QUANTHUB_MIN_REQUEST_SPACING_MS apart — the ~10 req/min budget on the
-    // new /apis/ohlc/ endpoint leaves no room for firing multiple batches at
-    // once the way the old (50 req/min) endpoint could. In the common case
+    // QUANTHUB_MIN_REQUEST_SPACING_MS apart — firing several batches at
+    // once would burn the per-minute allowance (30/min) in a single burst. In the common case
     // of <=50 required contracts this is exactly one request, same as
     // before. A failed batch shouldn't sink the others, but a wholesale
     // failure (auth/network) must surface.

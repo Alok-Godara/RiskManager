@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "worker:build": "vite build --ssr src/worker/priceWorker.ts --outDir dist-worker --emptyOutDir",
+    "worker:start": "node dist-worker/priceWorker.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.115.0",

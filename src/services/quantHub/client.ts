@@ -54,10 +54,10 @@ export interface FetchOhlcOptions {
   count?: number; // candles per instrument
   extraFields?: string;
   /**
-   * End timestamp, unix milliseconds — pins the request to "now" so we
-   * always get the freshest bar. Confirmed live: passing seconds here makes
-   * the API silently return a stale candle (tens of minutes old) instead of
-   * erroring, so this unit is easy to get wrong without noticing.
+   * End timestamp. The current swagger documents `start`/`end` as unix
+   * SECONDS (the retired /api/v2 endpoint took milliseconds and silently
+   * returned a stale candle for the wrong unit). Nothing passes this today:
+   * omitting it returns the freshest bars, which is all price polling needs.
    */
   end?: number;
   signal?: AbortSignal;
@@ -67,18 +67,48 @@ export interface FetchOhlcOptions {
 export const MAX_INSTRUMENTS_PER_REQUEST = 50;
 
 /**
- * QuantHub's published rate limit for this token on the new `/apis/ohlc/`
- * endpoint: ~10 requests per minute (down from the old endpoint's 50) —
- * confirmed by the user 2026-09. Every request-cadence derived from this
- * constant (see useRiskManagerData's quantHubPollMs) automatically stays
- * compliant if this number ever changes again.
+ * QuantHub's published rate limit for `/apis/ohlc/`, per token: 30/minute,
+ * 1,800/hour, 43,200/day — straight from the live swagger
+ * (https://qh-api.corp.hertshtengroup.com/apis/swagger/, "ohlc_list"). It was
+ * 10/minute until the API's rate limits were raised; re-check the swagger if
+ * 429s start appearing. The response also carries X-RateLimit-Limit /
+ * -Remaining / -Reset headers.
  */
-export const QUANTHUB_RATE_LIMIT_PER_MINUTE = 10;
+export const QUANTHUB_RATE_LIMIT_PER_MINUTE = 30;
 
-/** Minimum spacing between sequential requests implied by the rate limit above, with headroom (the user asked for "one request every 6-10 seconds"). */
+/**
+ * How much of that budget each kind of poller aims to use. The token is
+ * shared (this worker, any open dashboard tab, deployed viewers), so nobody
+ * sits at the ceiling: the background worker takes 20/min (1,200/hour,
+ * 28,800/day — inside the hourly AND daily caps with a third to spare), and
+ * a browser tab 10/min (each of its ticks also reloads the whole UI, so a
+ * slower cadence keeps that cheap — and a tab skips QuantHub entirely while
+ * the worker is alive, see MarketDataService.setDeferToWorker).
+ */
+export const QUANTHUB_WORKER_REQUESTS_PER_MINUTE = 20;
+export const QUANTHUB_BROWSER_REQUESTS_PER_MINUTE = 10;
+
+/** Poll interval for a given requests-per-minute target, plus a small margin for timer jitter. */
+export function quantHubPollIntervalMs(requestsPerMinute: number): number {
+  return Math.ceil(60_000 / requestsPerMinute) + 100;
+}
+
+/** Minimum spacing between sequential batch requests implied by the rate limit above, with headroom. */
 export const QUANTHUB_MIN_REQUEST_SPACING_MS = Math.ceil(60_000 / QUANTHUB_RATE_LIMIT_PER_MINUTE) + 500;
 
-const API_BASE = (import.meta.env?.VITE_QH_API_BASE ?? "/qh-api").replace(/\/+$/, "");
+let apiBase = (import.meta.env?.VITE_QH_API_BASE ?? "/qh-api").replace(/\/+$/, "");
+let extraHeaders: Record<string, string> = {};
+
+/**
+ * For SERVER-SIDE callers only (the background price worker): there is no
+ * same-origin proxy outside the browser, so point the client at QuantHub
+ * directly and send the Bearer token ourselves. The browser never calls
+ * this — its token stays in the dev/edge proxy.
+ */
+export function configureQuantHubClient({ baseUrl, bearerToken }: { baseUrl: string; bearerToken?: string }) {
+  apiBase = baseUrl.replace(/\/+$/, "");
+  extraHeaders = bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {};
+}
 
 // The live API returns a flat, newest-first array of candles, each tagged
 // with `product`:
@@ -275,8 +305,8 @@ export async function fetchOhlc(
 
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}/apis/ohlc/?${params.toString()}`, {
-      headers: { accept: "application/json" },
+    response = await fetch(`${apiBase}/apis/ohlc/?${params.toString()}`, {
+      headers: { accept: "application/json", ...extraHeaders },
       signal,
     });
   } catch (err) {
