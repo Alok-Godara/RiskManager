@@ -1,6 +1,9 @@
-import { v4 as uuid } from "uuid";
+import { v5 as uuidv5 } from "uuid";
 import type { Contract, Instrument } from "../types/domain";
 import { frontMonth, lastTradingDay } from "./contractExpiry";
+
+/** Fixed namespace for deterministic contract ids — never change, ids are derived from it. */
+const CONTRACT_ID_NAMESPACE = "6f1d3c9e-5b0a-4c7e-9a52-2d8f4b7c1e30";
 
 export const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -38,7 +41,11 @@ export function buildRollingContracts(instrument: Instrument, monthCount = 24, f
     const d = new Date(start.getFullYear(), start.getMonth() + i, 1);
     const { label, code } = monthLabelFor(d);
     out.push({
-      id: uuid(),
+      // Deterministic (instrument + month), not random: two overlapping runs
+      // of the rolling-contract top-up (two tabs, a double-rendered effect)
+      // now upsert the SAME row instead of each inserting its own copy —
+      // which is how duplicate "Dec26 / Dec26 / Jan27 / Jan27" months got in.
+      id: uuidv5(`${instrument.id}:${code}`, CONTRACT_ID_NAMESPACE),
       instrument_id: instrument.id,
       code: `${instrument.symbol}-${code}`,
       month_label: label,
@@ -52,6 +59,40 @@ export function buildRollingContracts(instrument: Instrument, monthCount = 24, f
     });
   }
   return out;
+}
+
+function isOutrightContract(c: Contract): boolean {
+  return !c.kind || c.kind === "Outright";
+}
+
+/**
+ * For databases that already hold duplicate outright rows for the same month
+ * (same instrument + month label): maps EVERY outright id to the one
+ * canonical id for that month (the earliest-created, ties by id), so lookups
+ * by month behave as if there were one contract per month. Non-outright
+ * contracts are not included. The real fix is merging the rows in the
+ * database (supabase/migrations/008_dedupe_contracts.sql); this just keeps
+ * the app correct in the meantime.
+ */
+export function canonicalContractIdMap(contracts: Contract[]): Map<string, string> {
+  const best = new Map<string, Contract>();
+  for (const c of contracts) {
+    if (!isOutrightContract(c)) continue;
+    const key = `${c.instrument_id}|${c.month_label}`;
+    const current = best.get(key);
+    if (!current || c.created_at < current.created_at || (c.created_at === current.created_at && c.id < current.id)) best.set(key, c);
+  }
+  const out = new Map<string, string>();
+  for (const c of contracts) {
+    if (isOutrightContract(c)) out.set(c.id, best.get(`${c.instrument_id}|${c.month_label}`)!.id);
+  }
+  return out;
+}
+
+/** Drops duplicate outright rows for the same month, keeping the canonical one; everything else passes through, order preserved. */
+export function dedupeContractsByMonth(contracts: Contract[]): Contract[] {
+  const canon = canonicalContractIdMap(contracts);
+  return contracts.filter((c) => !isOutrightContract(c) || canon.get(c.id) === c.id);
 }
 
 /** Sort an instrument's contracts chronologically, oldest first. */

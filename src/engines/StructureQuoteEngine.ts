@@ -3,7 +3,7 @@ import type { Contract, Instrument, StructureTemplate, UUID } from "../types/dom
 import { repository } from "../data";
 import { contractAtOffset } from "../utils/templateExpansion";
 import { deconvolve } from "../utils/decompose";
-import { sortContractsChronologically } from "../utils/contractGen";
+import { canonicalContractIdMap, sortContractsChronologically } from "../utils/contractGen";
 
 export interface ResolvedLeg {
   contract_id: UUID;
@@ -49,8 +49,14 @@ export class StructureQuoteEngine {
       return contractAtOffset(chronological, anchorContractId, 0);
     }
 
+    const canon = canonicalContractIdMap(instrumentContracts);
+    const wantedAnchor = canon.get(anchorContractId) ?? anchorContractId;
     const existing = instrumentContracts.find(
-      (c) => c.kind === "Structure" && c.quote_template_id === template.id && c.anchor_contract_id === anchorContractId
+      (c) =>
+        c.kind === "Structure" &&
+        c.quote_template_id === template.id &&
+        c.anchor_contract_id !== undefined &&
+        (canon.get(c.anchor_contract_id) ?? c.anchor_contract_id) === wantedAnchor
     );
     if (existing) return existing;
 

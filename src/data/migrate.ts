@@ -108,7 +108,20 @@ export async function runMigrations(): Promise<void> {
  * cheap (a handful of reads/writes) — safe to call on every load, so the
  * window keeps extending forward as time passes without manual action.
  */
-export async function ensureRollingContracts(): Promise<void> {
+let rollingInFlight: Promise<void> | null = null;
+
+export function ensureRollingContracts(): Promise<void> {
+  // Single-flight: overlapping calls (a dev double-render, several effects)
+  // share one run instead of racing each other into duplicate rows. Other
+  // browser tabs can still overlap, which is why the contract ids themselves
+  // are deterministic too (see buildRollingContracts).
+  rollingInFlight ??= topUpRollingContracts().finally(() => {
+    rollingInFlight = null;
+  });
+  return rollingInFlight;
+}
+
+async function topUpRollingContracts(): Promise<void> {
   const instruments = await repository.getInstruments();
   const now = new Date();
   for (const instrument of instruments) {
@@ -118,7 +131,7 @@ export async function ensureRollingContracts(): Promise<void> {
     const wanted = buildRollingContracts(instrument, ROLLING_MONTHS, now);
     const missing = wanted.filter((c) => !existingLabels.has(c.month_label));
     for (const c of missing) {
-      await repository.upsertContract({ ...c, id: uuid() });
+      await repository.upsertContract(c);
     }
   }
 }

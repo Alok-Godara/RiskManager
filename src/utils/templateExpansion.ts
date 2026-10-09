@@ -1,5 +1,5 @@
 import type { Contract, StructureTemplate, UUID } from "../types/domain";
-import { sortContractsChronologically } from "./contractGen";
+import { canonicalContractIdMap, dedupeContractsByMonth, sortContractsChronologically } from "./contractGen";
 import { deconvolve } from "./decompose";
 
 export interface OutrightLeg {
@@ -9,9 +9,15 @@ export interface OutrightLeg {
 
 /** Find the contract `offset` months from `anchorId` in a chronologically-sorted list. */
 export function contractAtOffset(chronological: Contract[], anchorId: UUID, offset: number): Contract {
-  const anchorIdx = chronological.findIndex((c) => c.id === anchorId);
+  // One contract per month: if the database holds duplicate rows for a month,
+  // counting offsets over them would land "next month" on the SAME month's
+  // twin (every leg of a Fly reading "Mar27 Fly"). The anchor is matched via
+  // its month's canonical id, so an anchor stored on a dropped twin still works.
+  const unique = dedupeContractsByMonth(chronological);
+  const anchorCanonical = canonicalContractIdMap(chronological).get(anchorId) ?? anchorId;
+  const anchorIdx = unique.findIndex((c) => c.id === anchorCanonical);
   if (anchorIdx === -1) throw new Error("Anchor contract not found among this instrument's contracts");
-  const contract = chronological[anchorIdx + offset];
+  const contract = unique[anchorIdx + offset];
   if (!contract) {
     throw new Error(
       `No contract ${offset} month(s) from the anchor — extend this instrument's contract months in Settings.`
@@ -85,8 +91,13 @@ export function previewLegs(
     if (isTrivialOutright(baseTemplate)) {
       return { label: legAnchor.month_label, ratio: weight * direction, willCreateQuote: false };
     }
+    const canon = canonicalContractIdMap(contracts);
     const existing = contracts.find(
-      (c) => c.kind === "Structure" && c.quote_template_id === baseTemplate.id && c.anchor_contract_id === legAnchor.id
+      (c) =>
+        c.kind === "Structure" &&
+        c.quote_template_id === baseTemplate.id &&
+        c.anchor_contract_id !== undefined &&
+        (canon.get(c.anchor_contract_id) ?? c.anchor_contract_id) === legAnchor.id
     );
     if (existing) return { label: existing.month_label, ratio: weight * direction, willCreateQuote: false };
     return { label: `${legAnchor.month_label} ${baseTemplate.name}`, ratio: weight * direction, willCreateQuote: true };

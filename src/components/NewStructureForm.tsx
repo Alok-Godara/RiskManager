@@ -4,7 +4,7 @@ import { StructureEngine } from "../engines/StructureEngine";
 import { StructureQuoteEngine, type ResolvedLeg } from "../engines/StructureQuoteEngine";
 import { repository } from "../data";
 import { expandToOutrights, previewLegs, type PreviewLeg } from "../utils/templateExpansion";
-import { sortContractsChronologically } from "../utils/contractGen";
+import { dedupeContractsByMonth, sortContractsChronologically } from "../utils/contractGen";
 import { contractLifecycleStatus, daysUntilExpiry } from "../utils/contractExpiry";
 import { ContractAutocomplete } from "./ContractAutocomplete";
 import { InfoTip } from "./InfoTip";
@@ -66,7 +66,7 @@ export function NewStructureForm({
   // (utils/contractExpiry.ts) — only give the user active contracts to
   // trade; a Near Expiry one stays selectable, just flagged in the picker.
   const instrumentContracts = useMemo(
-    () => sortContractsChronologically(contracts.filter((c) => c.instrument_id === instrumentId)),
+    () => dedupeContractsByMonth(sortContractsChronologically(contracts.filter((c) => c.instrument_id === instrumentId))),
     [contracts, instrumentId]
   );
   const anchorableContracts = useMemo(

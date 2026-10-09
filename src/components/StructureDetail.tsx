@@ -11,6 +11,7 @@ import { ExitEntryModal } from "./ExitEntryModal";
 import { InfoTip } from "./InfoTip";
 import { EditEntryModal } from "./EditEntryModal";
 import { EditExecutionModal } from "./EditExecutionModal";
+import { useStructureValueAtRisk } from "../hooks/useStructureValueAtRisk";
 
 export function StructureDetail({
   snapshot,
@@ -57,6 +58,8 @@ export function StructureDetail({
   const [riskDraft, setRiskDraft] = useState<number | "">(structure.initial_dollar_risk);
   const [riskError, setRiskError] = useState("");
   const [savingRisk, setSavingRisk] = useState(false);
+  const { loading: varLoading, valueAtRisk: structureVar } = useStructureValueAtRisk(snapshot, contracts, templates, instruments);
+  const holdsPosition = legs.some((l) => Math.abs(l.position.net_quantity) > 1e-9);
 
   useEffect(() => {
     EntryEngine.buildEntrySnapshots(snapshot).then(setEntries);
@@ -248,6 +251,35 @@ export function StructureDetail({
         <div className="stat-card">
           <div className="stat-label">Total P&amp;L</div>
           <div className={`stat-value ${pnlClass(snapshot.total_pnl)}`}>{fmtMoney(snapshot.total_pnl)}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">
+            Daily Swing ($)
+            <InfoTip>
+              How much this structure's P&amp;L typically moves in one day, in dollars, at the lots you hold in it right now (one
+              standard deviation of its daily P&amp;L over the last {structureVar?.observations ?? 90} trading days of settlement
+              prices). It looks at this structure on its own — your whole-book figure, with everything offsetting, is on the
+              Correlation tab.
+              {structureVar && (
+                <span style={{ display: "block", marginTop: 6 }}>
+                  Value at Risk ({(structureVar.confidence * 100).toFixed(0)}%, 1 day): ±{fmtMoney(structureVar.value_at_risk)} —{" "}
+                  {(structureVar.confidence * 100).toFixed(0)}% of days the P&amp;L should stay inside that range.
+                </span>
+              )}
+            </InfoTip>
+          </div>
+          <div className="stat-value">
+            {!holdsPosition ? "—" : structureVar ? "±" + fmtMoney(structureVar.daily_std_dev) : varLoading ? "…" : "—"}
+          </div>
+          <div className="stat-sub">
+            {!holdsPosition
+              ? "No open lots"
+              : structureVar
+                ? "VaR " + (structureVar.confidence * 100).toFixed(0) + "%: ±" + fmtMoney(structureVar.value_at_risk)
+                : varLoading
+                  ? "Calculating…"
+                  : "Not enough settlement history yet"}
+          </div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Structure Avg Entry Price</div>

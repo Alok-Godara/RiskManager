@@ -92,7 +92,14 @@ export async function buildCorrelationContext(
   templates: StructureTemplate[],
   instruments: Instrument[],
   historyTradingDays: number,
-  extraLegs: { contract_id: UUID; ratio: number }[] = []
+  extraLegs: { contract_id: UUID; ratio: number }[] = [],
+  /**
+   * Also fetch/read history for every OTHER configured instrument's outright
+   * contracts (see the comment above that loop) — right for the portfolio
+   * Correlation tab, but wasteful for a single-structure view that only needs
+   * its own months; pass false there.
+   */
+  warmAllInstruments = true
 ): Promise<CorrelationContext> {
   const contractsById = new Map(contracts.map((c) => [c.id, c]));
   const templatesById = new Map(templates.map((t) => [t.id, t]));
@@ -128,9 +135,11 @@ export async function buildCorrelationContext(
   // history is already cached by the time a structure gets created in an
   // instrument that's configured but not yet traded (e.g. WTI, Gasoil),
   // instead of showing "insufficient data" on day one for it.
-  for (const c of contracts) {
-    if ((!c.kind || c.kind === "Outright") && instrumentsById.has(c.instrument_id)) {
-      neededOutrights.set(c.id, c);
+  if (warmAllInstruments) {
+    for (const c of contracts) {
+      if ((!c.kind || c.kind === "Outright") && instrumentsById.has(c.instrument_id)) {
+        neededOutrights.set(c.id, c);
+      }
     }
   }
 
