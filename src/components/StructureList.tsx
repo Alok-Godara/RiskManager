@@ -318,10 +318,18 @@ export function StructureList({
                   ]}
                 />
               </th>
-              <th>Realized (Gross)</th>
-              <th>Realized (Net of TC)</th>
-              <th>Unrealized</th>
-              <th>Total P&L</th>
+              <th>
+                Net Realized
+                <InfoTip>Realized profit or loss (gross) minus every transaction cost paid on the trade — entry and exit sides.</InfoTip>
+              </th>
+              <th>
+                Unrealized (Gross)
+                <InfoTip>Gross profit or loss on the lots still open, at live prices.</InfoTip>
+              </th>
+              <th>
+                Net P&amp;L
+                <InfoTip>Net Realized plus Unrealized (Gross).</InfoTip>
+              </th>
               <th>
                 Active Risk
                 <InfoTip align="right">
@@ -361,10 +369,11 @@ export function StructureList({
                       </span>
                     ))}
                 </td>
-                <td className={pnlClass(s.total_realized_pnl)}>{fmtMoney(s.total_realized_pnl)}</td>
                 <td className={pnlClass(s.net_realized_pnl)}>{fmtMoney(s.net_realized_pnl)}</td>
                 <td className={pnlClass(s.total_unrealized_pnl)}>{fmtMoney(s.total_unrealized_pnl)}</td>
-                <td className={pnlClass(s.total_pnl)}>{fmtMoney(s.total_pnl)}</td>
+                <td className={pnlClass(s.net_realized_pnl + s.total_unrealized_pnl)}>
+                  {fmtMoney(s.net_realized_pnl + s.total_unrealized_pnl)}
+                </td>
                 <td>{fmtMoney(s.active_risk)}</td>
                 <td>{livePrice(s) !== undefined ? fmtPrice(livePrice(s)) : "—"}</td>
                 <td onClick={(e) => e.stopPropagation()}>
@@ -384,7 +393,7 @@ export function StructureList({
             ))}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={10} className="muted">
+                <td colSpan={9} className="muted">
                   {snapshots.length === 0
                     ? "No trades yet — click + New Trade above."
                     : "No trades match these filters."}
