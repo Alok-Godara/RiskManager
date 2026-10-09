@@ -99,6 +99,38 @@ function sideFromRatio(ratio: number): "Long" | "Short" {
  * mutation writes an AuditEvent (spec section 13 — never overwrite
  * history).
  */
+const ROMAN: [number, string][] = [
+  [1000, "M"], [900, "CM"], [500, "D"], [400, "CD"], [100, "C"], [90, "XC"],
+  [50, "L"], [40, "XL"], [10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"],
+];
+
+/** 2 -> "II", 4 -> "IV", 14 -> "XIV". */
+function toRoman(n: number): string {
+  let out = "";
+  let rest = n;
+  for (const [value, symbol] of ROMAN) {
+    while (rest >= value) {
+      out += symbol;
+      rest -= value;
+    }
+  }
+  return out;
+}
+
+/** A copy number written as digits ("3") or as a canonical Roman numeral ("III"); undefined for anything else. */
+function copyNumber(text: string): number | undefined {
+  if (/^\d+$/.test(text)) return Number(text);
+  let rest = text;
+  let total = 0;
+  for (const [value, symbol] of ROMAN) {
+    while (rest.startsWith(symbol)) {
+      total += value;
+      rest = rest.slice(symbol.length);
+    }
+  }
+  return rest === "" && total > 0 && toRoman(total) === text ? total : undefined;
+}
+
 export class StructureEngine {
   private static async audit(event: Omit<AuditEvent, "id" | "timestamp">) {
     const full: AuditEvent = { ...event, id: uuid(), timestamp: new Date().toISOString() };
@@ -150,6 +182,48 @@ export class StructureEngine {
     });
 
     return structure;
+  }
+
+  /**
+   * The name for the next copy of `baseName`: "Name-II", then "Name-III",
+   * "Name-IV", ... — one more than the highest copy number already in use.
+   * Copying "Name-II" counts as copying "Name" (only when a trade called "Name"
+   * really exists, so a name that merely ends in a dash and a number, like
+   * "Jan-27", is left alone). Older copies numbered with digits ("Name-2") are
+   * recognised too, so numbering carries on from them.
+   */
+  static nextCloneName(baseName: string, existingNames: string[]): string {
+    const names = new Set(existingNames);
+    const suffixed = /^(.*)-(\d+|[IVXLCDM]+)$/.exec(baseName);
+    const base = suffixed && names.has(suffixed[1]) && copyNumber(suffixed[2]) !== undefined ? suffixed[1] : baseName;
+    let highest = 1;
+    for (const n of names) {
+      if (!n.startsWith(base + "-")) continue;
+      const num = copyNumber(n.slice(base.length + 1));
+      if (num !== undefined) highest = Math.max(highest, num);
+    }
+    return `${base}-${toRoman(highest + 1)}`;
+  }
+
+  /**
+   * Copies a trade's DEFINITION (instrument, template, legs, initial risk,
+   * stop-loss, notes) into a brand-new, empty, Open trade — no entries,
+   * exits, P&L or risk allocations come along. Named "Name-2", "Name-3", ...
+   */
+  static async cloneStructure(structureId: UUID): Promise<Structure> {
+    const source = await repository.getStructure(structureId);
+    if (!source) throw new Error("Trade not found");
+    const [legs, all] = await Promise.all([repository.getLegsByStructure(structureId), repository.getStructures()]);
+    return this.createStructure({
+      instrument_id: source.instrument_id,
+      structure_template_id: source.structure_template_id,
+      name: this.nextCloneName(source.name, all.map((s) => s.name)),
+      structure_type: source.structure_type,
+      initial_dollar_risk: source.initial_dollar_risk,
+      initial_stop_loss: source.initial_stop_loss,
+      notes: source.notes,
+      legs: legs.map((l) => ({ contract_id: l.contract_id, ratio: l.ratio })),
+    });
   }
 
   /** Rename a structure. A structure's shape/legs never change here — only its display name. */
@@ -539,36 +613,55 @@ export class StructureEngine {
     return undefined;
   }
 
-  /** Recompute and persist a structure's overall status based on its legs. */
+  /**
+   * Keeps a trade's stored status consistent after its lots change. A trade
+   * is only ever CLOSED by the user (closeTrade) — exiting every lot no longer
+   * closes it, it just leaves the trade open and flat so more can be added or
+   * the trade closed deliberately. Older "Partially Closed"/"Modified"
+   * statuses are normalised to "Open". A closed trade is never touched here.
+   */
   static async refreshStructureStatus(structureId: UUID): Promise<Structure | undefined> {
     const structure = await repository.getStructure(structureId);
     if (!structure) return undefined;
+    if (structure.status === "Fully Closed" || structure.status === "Open") return structure;
+
+    const updated: Structure = { ...structure, status: "Open" };
+    await repository.upsertStructure(updated);
+    return updated;
+  }
+
+  /**
+   * The user's explicit "Close Trade". Refuses while any leg still holds lots
+   * — exit everything first, so a closed trade never carries a live position
+   * (no price polling, no risk counted, no exposure). Recorded in the audit log.
+   */
+  static async closeTrade(structureId: UUID): Promise<Structure> {
+    const structure = await repository.getStructure(structureId);
+    if (!structure) throw new Error("Trade not found");
+    if (structure.status === "Fully Closed") return structure;
+
     const legs = await repository.getLegsByStructure(structureId);
-
     const positions = await Promise.all(legs.map((l) => repository.getPositionByLeg(l.id)));
-    const anyOpen = positions.some((p) => (p?.net_quantity ?? 0) !== 0);
-    const allClosed = legs.length > 0 && positions.every((p) => (p?.net_quantity ?? 0) === 0);
-    const someClosed = positions.some((p) => (p?.net_quantity ?? 0) === 0) && anyOpen;
-
-    let status = structure.status;
-    if (allClosed) status = "Fully Closed";
-    else if (someClosed) status = "Partially Closed";
-    else if (anyOpen) status = structure.status === "Modified" ? "Modified" : "Open";
-
-    if (status !== structure.status) {
-      const updated: Structure = {
-        ...structure,
-        status,
-        closed_at: status === "Fully Closed" ? new Date().toISOString() : structure.closed_at,
-      };
-      await repository.upsertStructure(updated);
-      await this.audit({
-        event_type: "StructureModified",
-        structure_id: structureId,
-        description: `Status changed to ${status}`,
-      });
-      return updated;
+    const stillOpen = positions.filter((p) => Math.abs(p?.net_quantity ?? 0) > 1e-9).length;
+    if (stillOpen > 0) {
+      throw new Error(`Exit all remaining lots first — ${stillOpen} leg${stillOpen === 1 ? "" : "s"} still hold open lots.`);
     }
-    return structure;
+
+    const updated: Structure = { ...structure, status: "Fully Closed", closed_at: new Date().toISOString() };
+    await repository.upsertStructure(updated);
+    await this.audit({ event_type: "TradeClosed", structure_id: structureId, description: `Trade "${structure.name}" closed` });
+    return updated;
+  }
+
+  /** Puts a closed trade back to Open (e.g. closed by mistake). Recorded in the audit log. */
+  static async reopenTrade(structureId: UUID): Promise<Structure> {
+    const structure = await repository.getStructure(structureId);
+    if (!structure) throw new Error("Trade not found");
+    if (structure.status !== "Fully Closed") return structure;
+
+    const updated: Structure = { ...structure, status: "Open", closed_at: undefined };
+    await repository.upsertStructure(updated);
+    await this.audit({ event_type: "TradeReopened", structure_id: structureId, description: `Trade "${structure.name}" reopened` });
+    return updated;
   }
 }

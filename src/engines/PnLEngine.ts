@@ -10,6 +10,7 @@ import type {
 } from "../types/domain";
 import { repository } from "../data";
 import { TransactionCostEngine } from "./TransactionCostEngine";
+import { EntryEngine } from "./EntryEngine";
 
 /** Reference data shared across every structure in one snapshot pass, fetched once instead of per structure/leg. */
 interface TcContext {
@@ -49,6 +50,8 @@ export class PnLEngine {
     const instrument = await repository.getInstrument(structure.instrument_id);
 
     const legSnapshots: LegSnapshot[] = [];
+    const entryTimestamps: string[] = [];
+    const structureExecutions: Execution[] = [];
     for (const leg of legs) {
       const contract = await repository.getContract(leg.contract_id);
       if (!contract) continue;
@@ -70,6 +73,10 @@ export class PnLEngine {
       const legInstrument = tcContext?.instrumentsById.get(contract.instrument_id) ?? (await repository.getInstrument(contract.instrument_id));
       const templatesById = tcContext?.templatesById ?? new Map((await repository.getStructureTemplates()).map((t) => [t.id, t]));
       const transactionCost = TransactionCostEngine.legCost(legExecutions, contract, legInstrument, templatesById);
+      structureExecutions.push(...legExecutions);
+      for (const e of legExecutions) {
+        if (e.execution_type === "Entry" && (e.status ?? "Active") === "Active") entryTimestamps.push(e.timestamp);
+      }
 
       const unrealized = instrument
         ? this.unrealizedPnl(position, marketPrice?.price, instrument)
@@ -89,6 +96,12 @@ export class PnLEngine {
     const totalRealized = legSnapshots.reduce((s, l) => s + l.position.realized_pnl, 0);
     const totalUnrealized = legSnapshots.reduce((s, l) => s + l.unrealized_pnl, 0);
     const totalPnl = totalRealized + totalUnrealized;
+    const entryStats = EntryEngine.activeEntryStats(structureExecutions);
+    const stopUsage = EntryEngine.worstStopUsage(
+      structureExecutions,
+      new Map(legSnapshots.map((l) => [l.leg.id, l.current_price])),
+      instrument ? instrument.tick_value / instrument.tick_size : 0
+    );
     const totalTransactionCost = legSnapshots.reduce((s, l) => s + l.transaction_cost, 0);
 
     const remainingRiskCapacity = structure.current_dollar_risk + totalPnl;
@@ -102,6 +115,10 @@ export class PnLEngine {
       remaining_risk_capacity: remainingRiskCapacity,
       total_transaction_cost: totalTransactionCost,
       net_realized_pnl: totalRealized - totalTransactionCost,
+      entry_timestamps: entryTimestamps,
+      active_risk: entryStats.activeRisk,
+      open_entry_count: entryStats.openEntries,
+      stop_usage: stopUsage,
     };
   }
 

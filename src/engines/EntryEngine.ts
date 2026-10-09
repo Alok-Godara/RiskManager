@@ -22,6 +22,92 @@ const EPS = 1e-9;
  * by filtering exits that named THIS entry, rather than guessing from FIFO.
  */
 export class EntryEngine {
+  /**
+   * Active Risk of a structure (the risk_allocated of every entry that still
+   * has an open lot on any leg, summed — a fully exited entry no longer ties
+   * up any of the budget) and how many such open entries there are. Pure (no
+   * I/O) so list views can compute it from
+   * executions they already hold; it matches the per-entry open/closed logic
+   * in buildEntrySnapshots below (an entry is open while some leg has
+   * entered - closed > 0, with exits tied to their entry via
+   * closes_entry_group_id).
+   */
+  static activeEntryStats(executions: Execution[]): { activeRisk: number; openEntries: number } {
+    const active = executions.filter((e) => (e.status ?? "Active") === "Active");
+    const exits = active.filter((e) => e.execution_type !== "Entry");
+    const groups = new Map<UUID, Execution[]>();
+    for (const e of active) {
+      if (e.execution_type !== "Entry") continue;
+      const list = groups.get(e.entry_group_id) ?? [];
+      list.push(e);
+      groups.set(e.entry_group_id, list);
+    }
+    let total = 0;
+    let openEntries = 0;
+    for (const [groupId, entries] of groups) {
+      const closes = exits.filter((x) => x.closes_entry_group_id === groupId);
+      const isOpen = entries.some((en) => {
+        const closed = closes.filter((x) => x.structure_leg_id === en.structure_leg_id).reduce((s, x) => s + x.quantity, 0);
+        return en.quantity - closed > EPS;
+      });
+      if (isOpen) {
+        openEntries++;
+        total += entries.reduce((s, en) => s + (en.risk_allocated ?? 0), 0);
+      }
+    }
+    return { activeRisk: total, openEntries };
+  }
+
+  /**
+   * How close the open entries are to their stop loss. An entry's stop sits
+   * where its loss would equal the risk allocated to it, so "how far toward
+   * the stop" is simply (its current loss) / (its risk): 0.8 = 80% of the way,
+   * 1 = at the stop. Returns the WORST open entry (highest ratio) among those
+   * with risk allocated and a live price on every leg that still has lots, or
+   * undefined. Pure, from executions + live leg prices + $ per price unit.
+   */
+  static worstStopUsage(
+    executions: Execution[],
+    priceByLegId: Map<UUID, number | undefined>,
+    dollarPerPriceUnit: number
+  ): { usage: number; loss: number; risk: number } | undefined {
+    const active = executions.filter((e) => (e.status ?? "Active") === "Active");
+    const exits = active.filter((e) => e.execution_type !== "Entry");
+    const groups = new Map<UUID, Execution[]>();
+    for (const e of active) {
+      if (e.execution_type !== "Entry") continue;
+      const list = groups.get(e.entry_group_id) ?? [];
+      list.push(e);
+      groups.set(e.entry_group_id, list);
+    }
+
+    let worst: { usage: number; loss: number; risk: number } | undefined;
+    for (const [groupId, entries] of groups) {
+      const risk = entries.reduce((s, en) => s + (en.risk_allocated ?? 0), 0);
+      if (!(risk > 0) || !(dollarPerPriceUnit > 0)) continue;
+      const closes = exits.filter((x) => x.closes_entry_group_id === groupId);
+      let unrealized = 0;
+      let open = false;
+      let priced = true;
+      for (const en of entries) {
+        const closed = closes.filter((x) => x.structure_leg_id === en.structure_leg_id).reduce((s, x) => s + x.quantity, 0);
+        const openQty = en.quantity - closed;
+        if (openQty <= EPS) continue;
+        open = true;
+        const price = priceByLegId.get(en.structure_leg_id);
+        if (price === undefined) {
+          priced = false;
+          break;
+        }
+        unrealized += (price - en.price) * dollarPerPriceUnit * (en.side === "Long" ? openQty : -openQty);
+      }
+      if (!open || !priced) continue;
+      const usage = -unrealized / risk;
+      if (!worst || usage > worst.usage) worst = { usage, loss: Math.max(0, -unrealized), risk };
+    }
+    return worst;
+  }
+
   static async buildEntrySnapshots(snapshot: StructureSnapshot): Promise<EntrySnapshot[]> {
     const instrument = await repository.getInstrument(snapshot.structure.instrument_id);
     const dollarPerPriceUnit = instrument ? instrument.tick_value / instrument.tick_size : 0;

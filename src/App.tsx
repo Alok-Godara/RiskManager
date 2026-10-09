@@ -18,7 +18,7 @@ type Tab = "dashboard" | "structures" | "correlation" | "positions" | "history" 
 
 const NAV: { id: Tab; label: string; icon: (props: { size?: number }) => ReactElement }[] = [
   { id: "dashboard", label: "Dashboard", icon: IconGrid },
-  { id: "structures", label: "Structures", icon: IconStructure },
+  { id: "structures", label: "Trades", icon: IconStructure },
   { id: "correlation", label: "Correlation", icon: IconTrend },
   { id: "positions", label: "Positions", icon: IconLayers },
   { id: "history", label: "History", icon: IconClock },
@@ -27,7 +27,7 @@ const NAV: { id: Tab; label: string; icon: (props: { size?: number }) => ReactEl
 
 const TAB_TITLES: Record<Tab, string> = {
   dashboard: "Portfolio Dashboard",
-  structures: "Structures",
+  structures: "Trades",
   correlation: "Correlation & Concentration",
   positions: "Instrument Net Positions",
   history: "History & Audit Trail",
@@ -129,18 +129,31 @@ function App() {
               </span>
             </div>
             <div className="ticker-item">
-              <span className="ticker-label">Risk Utilized</span>
+              <span className="ticker-label">Active Risk</span>
               <span className="ticker-value">{fmtMoney(portfolio?.risk_utilized ?? 0)}</span>
             </div>
             <div className="ticker-item">
-              <span className="ticker-label">Open Structures</span>
+              <span className="ticker-label">Open Trades</span>
               <span className="ticker-value">{portfolio?.open_structures ?? 0}</span>
             </div>
           </div>
         </header>
 
         <main className="app-main">
-          {tab === "dashboard" && <PortfolioDashboard summary={portfolio} />}
+          {tab === "dashboard" && (
+            <PortfolioDashboard
+              summary={portfolio}
+              snapshots={snapshots}
+              contracts={contracts}
+              templates={templates}
+              instruments={instruments}
+              onOpenTrade={(id) => {
+                setTab("structures");
+                setCreatingStructure(false);
+                setSelectedStructureId(id);
+              }}
+            />
+          )}
 
           {tab === "positions" && <InstrumentDashboard instruments={instruments} snapshots={snapshots} />}
 
@@ -158,7 +171,7 @@ function App() {
           )}
 
           {tab === "structures" && !selectedSnapshot && !creatingStructure && (
-            <StructureList snapshots={snapshots} onSelect={setSelectedStructureId} onNewStructure={() => setCreatingStructure(true)} />
+            <StructureList snapshots={snapshots} onSelect={setSelectedStructureId} onNewStructure={() => setCreatingStructure(true)} onChanged={reload} />
           )}
 
           {tab === "structures" && selectedSnapshot && (

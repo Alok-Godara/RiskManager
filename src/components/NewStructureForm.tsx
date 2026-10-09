@@ -263,7 +263,7 @@ export function NewStructureForm({
       setCustomLegs([blankLeg()]);
       onCreated();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create structure");
+      setError(err instanceof Error ? err.message : "Failed to create trade");
     } finally {
       setSubmitting(false);
     }
@@ -272,7 +272,7 @@ export function NewStructureForm({
   return (
     <div className="panel">
       <div className="panel-header">
-        <h2>New Structure</h2>
+        <h2>New Trade</h2>
         {onCancel && (
           <button type="button" className="secondary" style={{ marginBottom: 0 }} onClick={onCancel}>
             Cancel
@@ -327,7 +327,7 @@ export function NewStructureForm({
         )}
 
         <div className="form-row">
-          <label>Structure Name</label>
+          <label>Trade Name</label>
           <input
             value={name}
             onChange={(e) => {
@@ -488,7 +488,7 @@ export function NewStructureForm({
         {error && <p className="helper-text" style={{ color: "var(--red)" }}>{error}</p>}
 
         <button type="submit" disabled={submitting || !canSubmit}>
-          {submitting ? "Creating…" : "Create Structure"}
+          {submitting ? "Creating…" : "Create Trade"}
         </button>
       </form>
     </div>

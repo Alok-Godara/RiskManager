@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { v4 as uuid } from "uuid";
 import type { Contract, Instrument, LegSide, StructureSnapshot, StructureTemplate } from "../types/domain";
+import { DEFAULT_RISK_PER_LOT } from "../types/domain";
 import { StructureEngine } from "../engines/StructureEngine";
 import { CorrelationEngine } from "../engines/CorrelationEngine";
 import { repository } from "../data";
@@ -34,10 +35,16 @@ export function AddEntryModal({
   const [sideOverride, setSideOverride] = useState<Record<string, LegSide>>({});
   const effQty = (legId: string, ratio: number) => qtyOverride[legId] ?? Math.abs(ratio) * structureLots;
   const effSide = (legId: string, ratio: number): LegSide => sideOverride[legId] ?? (ratio * direction >= 0 ? "Long" : "Short");
+  // null = "use the default" ($50 per lot of this entry, follows the lots as you
+  // change them); typing in the field replaces it with your own number.
+  const [riskOverride, setRiskOverride] = useState<number | "" | null>(null);
+  // Lots of THIS entry: structure lots while the legs follow the template, total leg lots once you've customised them.
+  const entryLots = Object.keys(qtyOverride).length === 0 ? structureLots : legs.reduce((sum, l) => sum + effQty(l.leg.id, l.leg.ratio), 0);
+  const defaultRisk = Math.round(DEFAULT_RISK_PER_LOT * (Number.isFinite(entryLots) ? entryLots : 0) * 100) / 100;
+  const riskAllocated: number | "" = riskOverride === null ? defaultRisk : riskOverride;
   const [legPrices, setLegPrices] = useState<Record<string, number>>(
     Object.fromEntries(legs.map((l) => [l.leg.id, l.current_price ?? 0]))
   );
-  const [riskAllocated, setRiskAllocated] = useState<number | "">("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   // Sizes the price fields' scroll/spinner step to the instrument's real
@@ -198,12 +205,16 @@ export function AddEntryModal({
         </p>
 
         <div className="form-row">
-          <label>Risk Allocated for this entry ($, optional)</label>
+          <label>Risk Allocated for this entry ($)</label>
           <input
             type="number"
             value={riskAllocated}
-            onChange={(e) => setRiskAllocated(e.target.value === "" ? "" : Number(e.target.value))}
+            onChange={(e) => setRiskOverride(e.target.value === "" ? "" : Number(e.target.value))}
           />
+          <p className="helper-text">
+            Default: ${DEFAULT_RISK_PER_LOT} per lot × {entryLots || 0} lot{entryLots === 1 ? "" : "s"} = ${defaultRisk}. Type a number to
+            use your own.
+          </p>
         </div>
 
         <NewTradeCorrelationPreview

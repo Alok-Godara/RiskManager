@@ -4,7 +4,7 @@ import { EntryEngine } from "../engines/EntryEngine";
 import { StructureEngine } from "../engines/StructureEngine";
 import { contractLifecycleStatus } from "../utils/contractExpiry";
 import { repository } from "../data";
-import { fmtMoney, fmtPrice, pnlClass } from "../utils/format";
+import { fmtMoney, fmtPrice, pnlClass, statusBadgeClass, statusLabel } from "../utils/format";
 import { IconChevronLeft, IconPencil } from "./icons";
 import { AddEntryModal } from "./AddEntryModal";
 import { ExitEntryModal } from "./ExitEntryModal";
@@ -58,6 +58,61 @@ export function StructureDetail({
   const [riskDraft, setRiskDraft] = useState<number | "">(structure.initial_dollar_risk);
   const [riskError, setRiskError] = useState("");
   const [savingRisk, setSavingRisk] = useState(false);
+  const [closeError, setCloseError] = useState("");
+  const [closingTrade, setClosingTrade] = useState(false);
+  const isClosed = structure.status === "Fully Closed";
+  const isFlat = !snapshot.legs.some((l) => Math.abs(l.position.net_quantity) > 1e-9);
+
+  /**
+   * A closed trade is a finished record — its buttons stay available, but
+   * every change first asks for explicit confirmation so a past trade can't be
+   * altered (and mixed with later results) by accident.
+   */
+  function guardClosed(what: string): boolean {
+    if (!isClosed) return true;
+    return window.confirm(
+      `This trade is CLOSED.\n\n${what} will change its recorded history and results.\n\nAre you sure you want to change a closed trade?`
+    );
+  }
+
+  async function handleCloseTrade() {
+    setCloseError("");
+    if (!isFlat) {
+      const open = snapshot.legs.filter((l) => Math.abs(l.position.net_quantity) > 1e-9).length;
+      setCloseError(`Exit all remaining lots first — ${open} leg${open === 1 ? "" : "s"} still hold open lots.`);
+      return;
+    }
+    if (
+      !window.confirm(
+        `Close trade "${structure.name}"?\n\nFinal realized P&L: ${fmtMoney(snapshot.total_realized_pnl)} gross, ${fmtMoney(snapshot.net_realized_pnl)} after transaction costs.\n\nOnce closed, any change to this trade will ask for confirmation.`
+      )
+    ) {
+      return;
+    }
+    setClosingTrade(true);
+    try {
+      await StructureEngine.closeTrade(structure.id);
+      onChanged();
+    } catch (err) {
+      setCloseError(err instanceof Error ? err.message : "Failed to close trade");
+    } finally {
+      setClosingTrade(false);
+    }
+  }
+
+  async function handleReopenTrade() {
+    setCloseError("");
+    if (!window.confirm(`Reopen trade "${structure.name}"? It will count as an open trade again.`)) return;
+    setClosingTrade(true);
+    try {
+      await StructureEngine.reopenTrade(structure.id);
+      onChanged();
+    } catch (err) {
+      setCloseError(err instanceof Error ? err.message : "Failed to reopen trade");
+    } finally {
+      setClosingTrade(false);
+    }
+  }
   const { loading: varLoading, valueAtRisk: structureVar } = useStructureValueAtRisk(snapshot, contracts, templates, instruments);
   const holdsPosition = legs.some((l) => Math.abs(l.position.net_quantity) > 1e-9);
 
@@ -107,6 +162,17 @@ export function StructureDetail({
   // without re-deriving anything from raw executions.
   const structureAvgPrice = legs.reduce((sum, l) => sum + l.leg.ratio * l.position.average_price, 0);
 
+  // Average stop-loss: the stop levels of the entries still open (each fixed at
+  // entry time from its risk allocation — see EntryEngine), averaged by their
+  // open lots, on the same composite price scale as the average entry price.
+  // Entries with no risk allocated have no stop and are left out.
+  const stopEntries = entries.filter((e) => e.open_quantity > 0 && e.stop_loss_price !== undefined);
+  const stopLots = stopEntries.reduce((sum, e) => sum + e.open_quantity, 0);
+  const structureAvgStop = stopLots > 0 ? stopEntries.reduce((sum, e) => sum + e.open_quantity * (e.stop_loss_price as number), 0) / stopLots : undefined;
+
+  // Net P&L: realized AFTER transaction costs + unrealized (which has no TC of its own yet).
+  const netPnl = snapshot.net_realized_pnl + snapshot.total_unrealized_pnl;
+
   function handleChanged() {
     onChanged();
   }
@@ -148,7 +214,7 @@ export function StructureDetail({
   async function handleDelete() {
     if (
       !window.confirm(
-        `Delete structure "${structure.name}"? This permanently removes all its legs, entries/exits, and realized P&L. This cannot be undone.`
+        `Delete trade "${structure.name}"? This permanently removes all its legs, entries/exits, and realized P&L. This cannot be undone.`
       )
     ) {
       return;
@@ -168,7 +234,7 @@ export function StructureDetail({
   return (
     <div className="panel">
       <button className="secondary back-button" onClick={onBack}>
-        <IconChevronLeft size={14} /> Back to structures
+        <IconChevronLeft size={14} /> Back to trades
       </button>
       <div className="panel-header">
         {renaming ? (
@@ -209,48 +275,78 @@ export function StructureDetail({
           <div className="inline-actions">
             <h2>
               {structure.name}{" "}
-              <span className={`badge badge-${structure.status.replace(/\s/g, "").toLowerCase()}`}>{structure.status}</span>
+              <span className={`badge ${statusBadgeClass(structure.status)}`}>{statusLabel(structure.status)}</span>
             </h2>
-            <button type="button" className="icon-button" onClick={() => setRenaming(true)} title="Edit structure" aria-label="Edit structure">
+            <button
+              type="button"
+              className="icon-button"
+              onClick={() => guardClosed("Editing the trade's name or deleting it") && setRenaming(true)}
+              title="Edit trade"
+              aria-label="Edit trade"
+            >
               <IconPencil size={14} />
             </button>
           </div>
         )}
         <div className="button-row">
-          <button onClick={() => setShowAddEntry(true)}>+ Add Entry</button>
+          <button onClick={() => guardClosed("Adding an entry") && setShowAddEntry(true)}>+ Add Entry</button>
+          {isClosed ? (
+            <button type="button" className="secondary" style={{ marginBottom: 0 }} onClick={handleReopenTrade} disabled={closingTrade}>
+              Reopen Trade
+            </button>
+          ) : (
+            <button type="button" className="secondary" style={{ marginBottom: 0 }} onClick={handleCloseTrade} disabled={closingTrade}>
+              {closingTrade ? "Closing…" : "Close Trade"}
+            </button>
+          )}
         </div>
       </div>
+      {isClosed && (
+        <p className="helper-text">
+          🔒 Closed{structure.closed_at ? " on " + new Date(structure.closed_at).toLocaleDateString() : ""}. This trade is a finished
+          record: you can still edit it, but every change asks for confirmation first.
+        </p>
+      )}
+      {!isClosed && isFlat && entries.length > 0 && (
+        <p className="helper-text">All lots are exited. Press Close Trade when you are finished with this trade.</p>
+      )}
+      {closeError && <p className="helper-text" style={{ color: "var(--red)" }}>{closeError}</p>}
       {renameError && <p className="helper-text" style={{ color: "var(--red)" }}>{renameError}</p>}
       {deleteError && <p className="helper-text" style={{ color: "var(--red)" }}>{deleteError}</p>}
 
-      <div className="card-grid">
+      <div className="card-grid" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}>
         <div className="stat-card">
           <div className="stat-label">
-            Realized P&amp;L (Gross){" "}
-            <InfoTip>Profit or loss booked on exited lots, before any transaction costs.</InfoTip>
-          </div>
-          <div className={`stat-value ${pnlClass(snapshot.total_realized_pnl)}`}>{fmtMoney(snapshot.total_realized_pnl)}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">
-            Realized P&amp;L (Net of TC){" "}
+            Net Realized P&amp;L{" "}
             <InfoTip>
-              Gross realized P&amp;L minus the exchange transaction costs paid so far. The exchange charges per outright lot: half
-              the round-turn rate when a lot is entered and half when it is exited, so a still-open lot has already paid its
-              entry half. A spread counts as 2 outrights, a fly as 4, a D-fly as 8. Rates are set per instrument in
-              Settings → Instruments. Rebates are not included.
+              Profit or loss booked on lots you have exited (gross), minus every transaction cost paid on this trade so far —
+              both the entry and exit sides, including the entry half already paid on lots still open. The exchange charges per
+              outright lot: half the round-turn rate on entry and half on exit. Rates: Settings → Instruments.
             </InfoTip>
           </div>
           <div className={`stat-value ${pnlClass(snapshot.net_realized_pnl)}`}>{fmtMoney(snapshot.net_realized_pnl)}</div>
-          <div className="stat-sub">TC paid: {fmtMoney(snapshot.total_transaction_cost)}</div>
+          <div className="stat-sub">
+            Gross {fmtMoney(snapshot.total_realized_pnl)} − TC {fmtMoney(snapshot.total_transaction_cost)}
+          </div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Unrealized P&amp;L</div>
+          <div className="stat-label">
+            Unrealized P&amp;L (Gross){" "}
+            <InfoTip>
+              Gross profit or loss on the lots still open, at the current live prices. No transaction costs are taken off here —
+              they are already counted in Net Realized.
+            </InfoTip>
+          </div>
           <div className={`stat-value ${pnlClass(snapshot.total_unrealized_pnl)}`}>{fmtMoney(snapshot.total_unrealized_pnl)}</div>
+          <div className="stat-sub">Open lots at live prices</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Total P&amp;L</div>
-          <div className={`stat-value ${pnlClass(snapshot.total_pnl)}`}>{fmtMoney(snapshot.total_pnl)}</div>
+          <div className="stat-label">
+            Net P&amp;L{" "}
+            <InfoTip>Net Realized P&amp;L (realized gross minus all transaction costs) plus the gross Unrealized P&amp;L of the open lots.</InfoTip>
+          </div>
+          <div className={`stat-value ${pnlClass(netPnl)}`}>{fmtMoney(netPnl)}</div>
+          <div className="stat-sub">Net realized + unrealized</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">
@@ -281,10 +377,30 @@ export function StructureDetail({
                   : "Not enough settlement history yet"}
           </div>
         </div>
+      </div>
+
+      {/* Second row: price levels and risk budget (the four P&L / swing cards stay on top). */}
+      <div className="card-grid">
         <div className="stat-card">
           <div className="stat-label">Structure Avg Entry Price</div>
           <div className="stat-value">{fmtPrice(structureAvgPrice)}</div>
           <div className="stat-sub">Composite across all entries — Σ(ratio × leg avg price), not just per-leg</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">
+            Structure Avg Stop Loss
+            <InfoTip>
+              The stop levels of your open entries, averaged by their open lots, on the same composite price scale as the average
+              entry price. Each entry's stop is where its loss would equal the risk allocated to it. Entries with no risk
+              allocated have no stop and are left out.
+            </InfoTip>
+          </div>
+          <div className="stat-value">{structureAvgStop !== undefined ? fmtPrice(structureAvgStop) : "—"}</div>
+          <div className="stat-sub">
+            {stopEntries.length > 0
+              ? "Lot-weighted across " + stopEntries.length + " open entr" + (stopEntries.length === 1 ? "y" : "ies") + " with a stop"
+              : "No open entry has risk allocated"}
+          </div>
         </div>
         <div className="stat-card">
           <div className="stat-label">
@@ -294,6 +410,7 @@ export function StructureDetail({
                 type="button"
                 className="icon-button"
                 onClick={() => {
+                  if (!guardClosed("Changing the initial risk")) return;
                   setRiskDraft(structure.initial_dollar_risk);
                   setRiskError("");
                   setEditingRisk(true);
@@ -446,12 +563,13 @@ export function StructureDetail({
                 <td className={pnlClass(en.realized_pnl)}>{fmtMoney(en.realized_pnl)}</td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <div className="inline-actions">
-                    <button type="button" onClick={() => setEditingEntry(en)}>
+                    <button type="button" onClick={() => guardClosed("Editing this entry") && setEditingEntry(en)}>
                       Edit
                     </button>
                     <button
                       type="button"
                       onClick={() => {
+                        if (!guardClosed("Exiting lots")) return;
                         setExitingLegId(undefined);
                         setExitingEntry(en);
                       }}
@@ -491,6 +609,7 @@ export function StructureDetail({
                                 <button
                                   type="button"
                                   onClick={() => {
+                                    if (!guardClosed("Exiting lots")) return;
                                     setExitingLegId(l.leg.id);
                                     setExitingEntry(en);
                                   }}
@@ -548,7 +667,7 @@ export function StructureDetail({
                   <td>
                     {ex.status === "Active" && (
                       <div className="inline-actions">
-                        <button type="button" onClick={() => setEditingExecution(ex)}>
+                        <button type="button" onClick={() => guardClosed("Editing this execution") && setEditingExecution(ex)}>
                           Edit
                         </button>
                       </div>

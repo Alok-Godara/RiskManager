@@ -28,6 +28,8 @@ export type AuditEventType =
   | "LegClosed"
   | "StructureModified"
   | "StructureDeleted"
+  | "TradeClosed"
+  | "TradeReopened"
   | "StopLossModified"
   | "RiskModified"
   | "RealizedProfitBooked"
@@ -357,6 +359,19 @@ export interface StructureSnapshot {
   remaining_risk_capacity: number;
   total_transaction_cost: number; // $ TC paid so far (half-RT on each entry and exit fill)
   net_realized_pnl: number; // total_realized_pnl - total_transaction_cost
+  // ISO timestamp of every active ENTRY fill on this structure's legs (the
+  // opening of a position or an addition to it) — what the Structures list's
+  // time-period filter matches against. Empty if nothing was ever entered.
+  entry_timestamps: string[];
+  // Risk allocated to entries that still have open lots — the same "Active
+  // Risk" figure the trade page shows (see EntryEngine.activeEntryStats).
+  active_risk: number;
+  // How many entries still have open lots — the trade's "open positions".
+  open_entry_count: number;
+  // The open entry closest to its stop loss: its current loss as a share of the
+  // risk allocated to it (1 = loss equals the risk, i.e. the stop is hit; negative
+  // = in profit). Undefined if no open entry has risk allocated and a live price.
+  stop_usage?: { usage: number; loss: number; risk: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -408,11 +423,11 @@ export interface PortfolioSummary {
   total_realized_pnl: number; // GROSS: before transaction costs
   total_transaction_cost: number;
   net_realized_pnl: number; // gross realized - transaction costs
-  total_unrealized_pnl: number;
-  net_pnl: number;
-  total_dollar_risk: number;
-  risk_utilized: number;
-  remaining_risk_capacity: number;
+  total_unrealized_pnl: number; // gross, open lots at live prices
+  net_pnl: number; // net realized + unrealized
+  total_dollar_risk: number; // sum of the initial risk given to every OPEN trade
+  risk_utilized: number; // active risk: risk allocated to entries that still have open lots
+  remaining_risk_capacity: number; // total_dollar_risk - risk_utilized
   open_structures: number;
   closed_structures: number;
 }
@@ -422,6 +437,14 @@ export interface PortfolioSummary {
 // from settlement-price history, never live/intraday prices, since it's a
 // day-over-day co-movement read, not a real-time one.
 // ---------------------------------------------------------------------------
+/**
+ * Default risk allocated to a new entry, in $ PER LOT: an entry of N lots
+ * starts with $50 x N (structure lots for a normal entry, total leg lots for a
+ * custom one — the same "lots" EntrySnapshot.structure_lots reports). Editable
+ * in the Add Entry window.
+ */
+export const DEFAULT_RISK_PER_LOT = 50;
+
 export const CORRELATION_WINDOWS = [30, 60, 90] as const;
 export type CorrelationWindow = (typeof CORRELATION_WINDOWS)[number];
 

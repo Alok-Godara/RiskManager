@@ -79,7 +79,7 @@ export function InstrumentDashboard({
         </tbody>
       </table>
 
-      <h3>Structures contributing to this instrument</h3>
+      <h3>Trades contributing to this instrument</h3>
       <ul className="structure-list">
         {relevantSnapshots.map((s) => (
           <li key={s.structure.id}>

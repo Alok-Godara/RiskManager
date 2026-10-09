@@ -29,15 +29,15 @@ export function useRiskManagerData() {
   const [loading, setLoading] = useState(true);
 
   const reload = useCallback(async () => {
-    const [inst, cons, tmpl, structs, snaps, summary, audit] = await Promise.all([
+    const [inst, cons, tmpl, structs, snaps, audit] = await Promise.all([
       repository.getInstruments(),
       repository.getContracts(),
       repository.getStructureTemplates(),
       repository.getStructures(),
       PnLEngine.buildAllStructureSnapshots(),
-      PortfolioEngine.buildSummary(),
       repository.getAuditEvents(),
     ]);
+    const summary = PortfolioEngine.summarize(snaps);
     setInstruments(inst);
     setContracts(cons);
     setTemplates(tmpl);
