@@ -24,7 +24,3 @@ export function pnlClass(n: number): string {
 export function statusLabel(status: string): "Open" | "Closed" {
   return status === "Fully Closed" ? "Closed" : "Open";
 }
-
-export function statusBadgeClass(status: string): string {
-  return status === "Fully Closed" ? "badge-fullyclosed" : "badge-open";
-}

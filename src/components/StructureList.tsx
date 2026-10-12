@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { StructureSnapshot } from "../types/domain";
-import { fmtMoney, fmtPrice, pnlClass, statusBadgeClass, statusLabel } from "../utils/format";
+import { fmtMoney, fmtPrice, pnlClass, statusLabel } from "../utils/format";
+import { tradeDirection, tradeStatusBadgeClass } from "../utils/tradeDirection";
 import { InfoTip } from "./InfoTip";
 import { IconSearch } from "./icons";
 import { StructureEngine } from "../engines/StructureEngine";
@@ -353,7 +354,16 @@ export function StructureList({
                 <td>{s.structure.name}</td>
                 <td>{s.structure.structure_type}</td>
                 <td>
-                  <span className={`badge ${statusBadgeClass(s.structure.status)}`}>{statusLabel(s.structure.status)}</span>
+                  <span
+                    className={`badge ${tradeStatusBadgeClass(s)}`}
+                    title={
+                      s.structure.status === "Fully Closed"
+                        ? "Closed"
+                        : `Open — ${tradeDirection(s) === "long" ? "net long" : tradeDirection(s) === "short" ? "net short" : "flat (no net position)"}`
+                    }
+                  >
+                    {statusLabel(s.structure.status)}
+                  </span>
                   {s.structure.status !== "Fully Closed" &&
                     (s.open_entry_count > 0 ? (
                       <span

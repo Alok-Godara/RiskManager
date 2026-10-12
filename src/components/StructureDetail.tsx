@@ -4,7 +4,8 @@ import { EntryEngine } from "../engines/EntryEngine";
 import { StructureEngine } from "../engines/StructureEngine";
 import { contractLifecycleStatus } from "../utils/contractExpiry";
 import { repository } from "../data";
-import { fmtMoney, fmtPrice, pnlClass, statusBadgeClass, statusLabel } from "../utils/format";
+import { fmtMoney, fmtPrice, pnlClass, statusLabel } from "../utils/format";
+import { tradeStatusBadgeClass } from "../utils/tradeDirection";
 import { IconChevronLeft, IconPencil } from "./icons";
 import { AddEntryModal } from "./AddEntryModal";
 import { ExitEntryModal } from "./ExitEntryModal";
@@ -275,7 +276,7 @@ export function StructureDetail({
           <div className="inline-actions">
             <h2>
               {structure.name}{" "}
-              <span className={`badge ${statusBadgeClass(structure.status)}`}>{statusLabel(structure.status)}</span>
+              <span className={`badge ${tradeStatusBadgeClass(snapshot)}`}>{statusLabel(structure.status)}</span>
             </h2>
             <button
               type="button"

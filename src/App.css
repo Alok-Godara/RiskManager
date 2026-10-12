@@ -499,6 +499,10 @@ body {
 .badge-partiallyclosed { background: var(--accent-dim); color: var(--accent-strong); }
 .badge-modified { background: var(--amber-dim); color: var(--amber); }
 .badge-fullyclosed { background: rgba(255, 255, 255, 0.06); color: var(--text-faint); }
+/* Trade status by position: clearly coloured, but softer than the full theme colours. */
+.badge-long { background: rgba(79, 140, 255, 0.2); color: #6ea0ff; }
+.badge-short { background: rgba(255, 92, 101, 0.2); color: #ff7b83; }
+.badge-flat { background: rgba(255, 182, 72, 0.19); color: #f2b551; }
 .badge-nearexpiry { background: var(--amber-dim); color: var(--amber); }
 .badge-expired { background: rgba(255, 92, 101, 0.14); color: var(--red); }
 
