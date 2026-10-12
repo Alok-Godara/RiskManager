@@ -26,6 +26,19 @@ function monthLabelFor(date: Date): { label: string; code: string } {
 }
 
 /**
+ * The month label `offset` calendar months after `anchorLabel`, e.g.
+ * ("Nov28", 1) -> "Dec28", ("Dec28", 1) -> "Jan29". Pure date arithmetic —
+ * needs no contract to exist for the result, which is the point: a spread
+ * anchored on the LAST month of the rolling contract window needs a second
+ * month that isn't in the list yet. Undefined if the anchor label doesn't parse.
+ */
+export function monthLabelAtOffset(anchorLabel: string, offset: number): string | undefined {
+  const anchor = parseMonthLabel(anchorLabel);
+  if (!anchor) return undefined;
+  return monthLabelFor(new Date(anchor.getFullYear(), anchor.getMonth() + offset, 1)).label;
+}
+
+/**
  * Build a rolling run of monthly contracts, starting at the instrument's
  * actual tradeable FRONT month (see utils/contractExpiry.ts) — not simply
  * `from`'s own calendar month. Brent's front month, for example, runs

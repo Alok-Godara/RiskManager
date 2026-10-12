@@ -344,3 +344,115 @@ export async function fetchOhlc(
 
   return normalizeOhlcResponse(json);
 }
+
+// ---------------------------------------------------------------------------
+// TAQ (Trade and Quote) — used only as a fallback price source when the OHLC
+// candle for a product is stale (see staleness.ts / QuantHubProvider).
+//
+//   POST {base}/apis/taq/   { products: [{ id: "COX28-Z28", dates: ["2026-10-09", ...], start, end }] }
+//
+// Each row is one book/trade update with the best bid/ask and their sizes;
+// `timestamp` is epoch MICROseconds in real UTC (unlike OHLC candle times).
+// Rate limit is 7/minute, so callers cache and batch.
+// ---------------------------------------------------------------------------
+
+export interface TaqQuote {
+  bid: number;
+  ask: number;
+  bidSize?: number;
+  askSize?: number;
+  /** Epoch ms, real UTC, of the book update this quote comes from. */
+  timestampMs: number;
+}
+
+interface TaqRow {
+  timestamp?: number;
+  instrument?: string;
+  best_bid?: number | null;
+  best_ask?: number | null;
+  bid_size?: number | null;
+  ask_size?: number | null;
+}
+
+interface TaqPage {
+  total_pages?: number;
+  data?: TaqRow[];
+}
+
+/**
+ * The most recent two-sided quote (a real best bid AND best ask) per product,
+ * across the given dates. Products with no quote in those dates are omitted.
+ * Uses the last page when the response is paginated (rows are time-ordered).
+ */
+export async function fetchLatestTaqQuotes(
+  products: { code: string; dates: string[] }[],
+  signal?: AbortSignal
+): Promise<Record<string, TaqQuote>> {
+  if (products.length === 0) return {};
+  const body = JSON.stringify({
+    products: products.map((p) => ({ id: p.code, dates: p.dates, start: "00:00:00", end: "23:59:59" })),
+  });
+
+  const post = async (page?: number): Promise<TaqPage> => {
+    let response: Response;
+    try {
+      response = await fetch(`${apiBase}/apis/taq/${page ? `?page=${page}` : ""}`, {
+        method: "POST",
+        headers: { accept: "application/json", "content-type": "application/json", ...extraHeaders },
+        body,
+        signal,
+      });
+    } catch (err) {
+      throw new QuantHubError("network", err instanceof Error ? err.message : "Network request failed");
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw new QuantHubError("auth", "QuantHub rejected the credentials — check QH_API_TOKEN in .env (and restart the dev server).", response.status);
+    }
+    if (response.status === 429) throw new QuantHubError("rate_limit", "QuantHub is rate-limiting TAQ requests.", 429);
+    if (!response.ok) throw new QuantHubError("http", `QuantHub TAQ returned ${response.status}`, response.status);
+    try {
+      return (await response.json()) as TaqPage;
+    } catch {
+      throw new QuantHubError("parse", "QuantHub TAQ returned a response that isn't valid JSON");
+    }
+  };
+
+  const first = await post();
+  let rows = first.data ?? [];
+  if ((first.total_pages ?? 1) > 1) {
+    try {
+      rows = (await post(first.total_pages)).data ?? rows;
+    } catch {
+      // keep the first page — still a valid (if older) quote
+    }
+  }
+
+  const latest: Record<string, TaqQuote> = {};
+  for (const row of rows) {
+    if (typeof row.best_bid !== "number" || typeof row.best_ask !== "number" || typeof row.timestamp !== "number" || !row.instrument) continue;
+    if (!Number.isFinite(row.best_bid) || !Number.isFinite(row.best_ask)) continue;
+    const key = row.instrument.toUpperCase();
+    const timestampMs = row.timestamp / 1000;
+    if (latest[key] && latest[key].timestampMs >= timestampMs) continue;
+    latest[key] = {
+      bid: row.best_bid,
+      ask: row.best_ask,
+      bidSize: typeof row.bid_size === "number" ? row.bid_size : undefined,
+      askSize: typeof row.ask_size === "number" ? row.ask_size : undefined,
+      timestampMs,
+    };
+  }
+  return latest;
+}
+
+/**
+ * Volume-weighted average of the best bid and best ask: each side's price
+ * weighted by the size resting there — (bid x bidSize + ask x askSize) /
+ * (bidSize + askSize). Falls back to the plain midpoint when sizes are missing.
+ */
+export function bidAskVwap(q: TaqQuote): number {
+  const bs = q.bidSize ?? 0;
+  const as = q.askSize ?? 0;
+  if (bs + as > 0) return (q.bid * bs + q.ask * as) / (bs + as);
+  return (q.bid + q.ask) / 2;
+}

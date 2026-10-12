@@ -1,9 +1,19 @@
 import type { Contract, Instrument, StructureTemplate, UUID } from "../../types/domain";
 import { repository } from "../../data";
 import { contractAtOffset } from "../../utils/templateExpansion";
-import { sortContractsChronologically } from "../../utils/contractGen";
+import { monthLabelAtOffset, sortContractsChronologically } from "../../utils/contractGen";
 import type { MarketDataProvider, PriceQuote } from "../MarketDataService";
-import { fetchOhlc, latestCandle, MAX_INSTRUMENTS_PER_REQUEST, QUANTHUB_MIN_REQUEST_SPACING_MS, QuantHubError, type OhlcCandle } from "./client";
+import {
+  bidAskVwap,
+  fetchLatestTaqQuotes,
+  fetchOhlc,
+  latestCandle,
+  MAX_INSTRUMENTS_PER_REQUEST,
+  QUANTHUB_MIN_REQUEST_SPACING_MS,
+  QuantHubError,
+  type OhlcCandle,
+} from "./client";
+import { isStaleCandle, londonToday, wallDate } from "./staleness";
 import { buildCompositeQuantHubCode, quantHubProductCode, toQuantHubCode } from "./symbols";
 
 /**
@@ -57,6 +67,28 @@ function chunk<T>(items: T[], size: number): T[][] {
   return out;
 }
 
+/**
+ * TAQ fallback bookkeeping. TAQ is limited to 7 requests/minute and can be
+ * heavy, so results are cached per product and the calls are spaced out — a
+ * stale price is by definition not changing quickly.
+ */
+const TAQ_CACHE_MS = 5 * 60_000;
+const TAQ_RETRY_MS = 60_000;
+const TAQ_MIN_CALL_SPACING_MS = 10_000;
+const TAQ_MAX_PRODUCTS_PER_CALL = 5;
+const TAQ_MAX_LOOKBACK_DAYS = 7;
+const taqCache = new Map<string, { at: number; price?: number; asOf?: number }>();
+let lastTaqCallAt = 0;
+
+/** YYYY-MM-DD for every day from `fromDate` to `toDate` inclusive (capped to the last TAQ_MAX_LOOKBACK_DAYS). */
+function dateRange(fromDate: string, toDate: string): string[] {
+  const out: string[] = [];
+  const end = new Date(`${toDate}T00:00:00Z`).getTime();
+  const start = Math.max(new Date(`${fromDate}T00:00:00Z`).getTime(), end - (TAQ_MAX_LOOKBACK_DAYS - 1) * 86_400_000);
+  for (let t = start; t <= end; t += 86_400_000) out.push(new Date(t).toISOString().slice(0, 10));
+  return out;
+}
+
 function isOutright(contract: Contract): boolean {
   return !contract.kind || contract.kind === "Outright";
 }
@@ -94,17 +126,74 @@ export class QuantHubProvider implements MarketDataProvider {
 
     const instrumentContracts = ref.contractsByInstrument.get(contract.instrument_id) ?? [];
     const chronological = sortContractsChronologically(instrumentContracts.filter(isOutright));
+    const anchorLabel = instrumentContracts.find((c) => c.id === contract.anchor_contract_id)?.month_label;
 
-    try {
-      const monthLabels = [...template.legs]
-        .sort((a, b) => a.month_offset - b.month_offset)
-        .map((leg) => contractAtOffset(chronological, contract.anchor_contract_id!, leg.month_offset).month_label);
-      return buildCompositeQuantHubCode(quantHubProductCode(instrument), monthLabels);
-    } catch {
-      // Anchor/offset no longer resolvable (e.g. contract months trimmed) —
-      // this quote just goes unpriced this tick rather than failing the refresh.
-      return undefined;
+    // Each leg's month: from our contract list when it covers it, otherwise by
+    // calendar arithmetic from the anchor. The list is a rolling 24-month
+    // window, so a spread anchored on its LAST month (e.g. Nov28 calendar
+    // spread = Nov28 - Dec28 when the list ends at Nov28) has a second month
+    // that isn't in it — the exchange code only needs the month and year, so
+    // there is no reason to leave such a quote unpriced.
+    const monthLabels: string[] = [];
+    for (const leg of [...template.legs].sort((a, b) => a.month_offset - b.month_offset)) {
+      let label: string | undefined;
+      try {
+        label = contractAtOffset(chronological, contract.anchor_contract_id, leg.month_offset).month_label;
+      } catch {
+        label = anchorLabel ? monthLabelAtOffset(anchorLabel, leg.month_offset) : undefined;
+      }
+      // Still unresolvable (anchor gone entirely): this quote just goes unpriced this tick rather than failing the refresh.
+      if (!label) return undefined;
+      monthLabels.push(label);
     }
+    return buildCompositeQuantHubCode(quantHubProductCode(instrument), monthLabels);
+  }
+
+  /**
+   * Latest two-sided TAQ quote -> size-weighted bid/ask price, for products whose
+   * OHLC candle is stale. Cached per product (success 5 min, miss/failure 1 min),
+   * batched into one request and spaced out to respect TAQ's 7/min limit. Any
+   * failure just means "no fallback this time" — the OHLC price still stands.
+   */
+  private async taqFallback(
+    stale: { code: string; candleTime: number }[],
+    now: number
+  ): Promise<Record<string, { price: number; asOf: number }>> {
+    const out: Record<string, { price: number; asOf: number }> = {};
+    const toFetch: { code: string; dates: string[] }[] = [];
+    const today = londonToday(now);
+
+    for (const { code, candleTime } of stale) {
+      const cached = taqCache.get(code);
+      if (cached) {
+        const ttl = cached.price !== undefined ? TAQ_CACHE_MS : TAQ_RETRY_MS;
+        if (now - cached.at < ttl) {
+          if (cached.price !== undefined && cached.asOf !== undefined) out[code] = { price: cached.price, asOf: cached.asOf };
+          continue;
+        }
+      }
+      if (toFetch.length < TAQ_MAX_PRODUCTS_PER_CALL) toFetch.push({ code, dates: dateRange(wallDate(candleTime), today) });
+    }
+    if (toFetch.length === 0 || now - lastTaqCallAt < TAQ_MIN_CALL_SPACING_MS) return out;
+
+    lastTaqCallAt = now;
+    try {
+      const quotes = await fetchLatestTaqQuotes(toFetch);
+      for (const { code } of toFetch) {
+        const q = quotes[code];
+        if (q) {
+          const price = Math.round(bidAskVwap(q) * 10_000) / 10_000;
+          taqCache.set(code, { at: now, price, asOf: q.timestampMs });
+          out[code] = { price, asOf: q.timestampMs };
+        } else {
+          taqCache.set(code, { at: now });
+        }
+      }
+    } catch (err) {
+      console.warn("QuantHub TAQ fallback failed:", err instanceof Error ? err.message : err);
+      for (const { code } of toFetch) taqCache.set(code, { at: now });
+    }
+    return out;
   }
 
   private codeFor(contract: Contract, ref: RefData): string | undefined {
@@ -178,17 +267,31 @@ export class QuantHubProvider implements MarketDataProvider {
         : new QuantHubError("network", firstError instanceof Error ? firstError.message : "QuantHub request failed");
     }
 
+    // Stale OHLC prices (older than 4 hours, or not from today) aren't a useful
+    // live price. For those, ask TAQ for the latest best bid/ask and use their
+    // size-weighted average. Only while the market is evidently open — if EVERY
+    // candle in this batch is stale it's a weekend/holiday, nothing is trading,
+    // and the last price is simply the last price.
+    const now = Date.now();
+    const staleCodes = Object.entries(closeByCode)
+      .filter(([, m]) => m.asOf !== undefined && isStaleCandle(m.asOf, now))
+      .map(([code, m]) => ({ code, candleTime: m.asOf as number }));
+    const marketOpen = staleCodes.length < Object.keys(closeByCode).length;
+    const taqPrices = marketOpen && staleCodes.length > 0 ? await this.taqFallback(staleCodes, now) : {};
+    const staleSet = new Set(staleCodes.map((s) => s.code));
+
     const quotes: Record<UUID, PriceQuote> = {};
     for (const contract of contracts) {
       const code = codeByContractId.get(contract.id);
       if (!code) continue;
-      const mark = closeByCode[code.toUpperCase()];
+      const key = code.toUpperCase();
+      const mark = closeByCode[key];
       if (!mark) continue; // unknown/unquoted code or empty series — left unpriced this tick
-      quotes[contract.id] = {
-        price: mark.price,
-        asOf: mark.asOf,
-        source: isOutright(contract) ? this.name : `${this.name} (structure)`,
-      };
+      const base = isOutright(contract) ? this.name : `${this.name} (structure)`;
+      const taq = taqPrices[key];
+      quotes[contract.id] = taq
+        ? { price: taq.price, asOf: taq.asOf, source: `${base} TAQ bid/ask VWAP` }
+        : { price: mark.price, asOf: mark.asOf, source: staleSet.has(key) ? `${base} (stale)` : base };
     }
 
     return quotes;
