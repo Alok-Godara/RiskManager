@@ -13,4 +13,4 @@ alter table instruments add column if not exists tc_per_outright_rt double preci
 update instruments set tc_per_outright_rt = 1.78 where tc_per_outright_rt is null and upper(symbol) in ('CL', 'BZ');
 update instruments set tc_per_outright_rt = 1.90 where tc_per_outright_rt is null and upper(symbol) = 'BRN';
 update instruments set tc_per_outright_rt = 2.04 where tc_per_outright_rt is null and upper(symbol) = 'WBS';
-update instruments set tc_per_outright_rt = 2.10 where tc_per_outright_rt is null and upper(symbol) = 'GO';
+update instruments set tc_per_outright_rt = 2.10 where tc_per_outright_rt is null and (upper(symbol) = 'GO' or upper(coalesce(exchange_code, '')) = 'GO');

@@ -37,7 +37,11 @@ export class TransactionCostEngine {
     if (instrument.tc_per_outright_rt !== undefined && instrument.tc_per_outright_rt !== null) {
       return instrument.tc_per_outright_rt;
     }
-    return DEFAULT_TC_PER_OUTRIGHT_RT[instrument.symbol.trim().toUpperCase()] ?? 0;
+    // By symbol first, then by the exchange/QuantHub code — Gasoil is symbol
+    // "G" here but "GO" on the exchange, which is the code the schedule uses.
+    const bySymbol = DEFAULT_TC_PER_OUTRIGHT_RT[instrument.symbol.trim().toUpperCase()];
+    if (bySymbol !== undefined) return bySymbol;
+    return DEFAULT_TC_PER_OUTRIGHT_RT[(instrument.exchange_code ?? "").trim().toUpperCase()] ?? 0;
   }
 
   /** How many outright lots one lot of this contract trades. */

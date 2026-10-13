@@ -7,6 +7,16 @@ import { buildRollingContracts } from "../../utils/contractGen";
 import { logAudit } from "../../utils/auditLog";
 import { DEFAULT_TC_PER_OUTRIGHT_RT, TransactionCostEngine } from "../../engines/TransactionCostEngine";
 
+/** Supabase errors are plain objects, not Error instances; give a readable message, with a pointer when the TC column hasn't been added to the database yet. */
+function describeSaveError(err: unknown): string {
+  const message =
+    err instanceof Error ? err.message : typeof err === "object" && err !== null && "message" in err ? String((err as { message: unknown }).message) : "Failed to save";
+  if (message.includes("tc_per_outright_rt")) {
+    return "The database doesn't have the transaction-cost column yet. Run supabase/migrations/007_instrument_tc.sql in the Supabase SQL editor, then save again.";
+  }
+  return message;
+}
+
 interface FormState {
   name: string;
   symbol: string;
@@ -51,11 +61,13 @@ export function InstrumentSettings({
   const [error, setError] = useState("");
 
   function openAdd() {
+    setError("");
     setForm(blankForm());
     setShowAdd(true);
   }
 
   function openEdit(inst: Instrument) {
+    setError("");
     setEditing(inst);
     setForm({
       name: inst.name,
@@ -129,6 +141,8 @@ export function InstrumentSettings({
       });
       closeModals();
       onChanged();
+    } catch (err) {
+      setError(describeSaveError(err));
     } finally {
       setSaving(false);
     }
@@ -157,6 +171,8 @@ export function InstrumentSettings({
       await logAudit({ event_type: "InstrumentUpdated", description: `Instrument "${updated.name}" updated` });
       closeModals();
       onChanged();
+    } catch (err) {
+      setError(describeSaveError(err));
     } finally {
       setSaving(false);
     }
@@ -221,7 +237,7 @@ export function InstrumentSettings({
           min="0"
           value={form.tc_per_outright_rt}
           onChange={(e) => setForm({ ...form, tc_per_outright_rt: e.target.value === "" ? "" : Number(e.target.value) })}
-          placeholder={`Default: ${DEFAULT_TC_PER_OUTRIGHT_RT[form.symbol.trim().toUpperCase()] ?? "none"}`}
+          placeholder={`Default: ${DEFAULT_TC_PER_OUTRIGHT_RT[form.symbol.trim().toUpperCase()] ?? DEFAULT_TC_PER_OUTRIGHT_RT[form.exchange_code.trim().toUpperCase()] ?? "none"}`}
         />
         <p className="helper-text">
           The exchange charges per outright, so a spread costs 2× this, a fly 4×, a D-fly 8×. Half is charged when a lot is
@@ -325,6 +341,7 @@ export function InstrumentSettings({
         <Modal title="Add Instrument" onClose={closeModals}>
           <form className="form" onSubmit={handleCreate}>
             {fieldsForm}
+            {error && <p className="helper-text" style={{ color: "var(--red)" }}>{error}</p>}
             <button type="submit" disabled={saving}>
               {saving ? "Creating…" : "Add Instrument"}
             </button>
@@ -336,6 +353,7 @@ export function InstrumentSettings({
         <Modal title={`Edit ${editing.name}`} onClose={closeModals}>
           <form className="form" onSubmit={handleEditSave}>
             {fieldsForm}
+            {error && <p className="helper-text" style={{ color: "var(--red)" }}>{error}</p>}
             <button type="submit" disabled={saving}>
               {saving ? "Saving…" : "Save Changes"}
             </button>
