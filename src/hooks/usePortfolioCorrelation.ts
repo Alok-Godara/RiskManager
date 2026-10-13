@@ -4,8 +4,8 @@ import { CORRELATION_WINDOWS } from "../types/domain";
 import { CorrelationEngine, VAR_LOOKBACK_DAYS, type DailySeriesPoint } from "../engines/CorrelationEngine";
 import { buildCorrelationContext, getCorrelationSettings, historyTradingDaysFor } from "../services/settlementData/correlationContext";
 
-/** Settlements publish once/day — this just picks up a newly-published one without a manual reload. */
-const REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+/** Settlements publish once/day — this just picks up a newly-published one without a manual reload. (Hourly, and only while the page is visible: each pass reads stored history from the database.) */
+const REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 
 export interface PortfolioCorrelationState {
   loading: boolean;
@@ -165,7 +165,9 @@ export function usePortfolioCorrelation(
   }, [structureSignature, contracts.length, templates.length, instruments.length, nonce]);
 
   useEffect(() => {
-    const id = window.setInterval(() => setNonce((n) => n + 1), REFRESH_INTERVAL_MS);
+    const id = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") setNonce((n) => n + 1);
+    }, REFRESH_INTERVAL_MS);
     return () => window.clearInterval(id);
   }, []);
 

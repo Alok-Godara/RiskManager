@@ -54,7 +54,9 @@ function App() {
 
   const asOfHint = marketData.quoteAsOf ? ` — quotes as of ${new Date(marketData.quoteAsOf).toLocaleTimeString()}` : "";
   const marketDataHint =
-    marketData.state === "ok"
+    marketData.state === "paused"
+      ? "Markets are closed for the weekend — price updates paused (resumes Sunday 22:00 London)"
+      : marketData.state === "ok"
       ? `Live — ${marketData.pricedCount} contract(s) priced${asOfHint}`
       : marketData.state === "partial"
         ? `${marketData.pricedCount} of ${marketData.requestedCount} contracts priced${asOfHint}`

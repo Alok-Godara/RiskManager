@@ -220,6 +220,11 @@ export class SupabaseRepository implements DataRepository {
     const { error } = await this.db().from("market_prices").upsert(price, { onConflict: "contract_id" });
     if (error) throw error;
   }
+  async upsertMarketPrices(prices: MarketPrice[]) {
+    if (prices.length === 0) return;
+    const { error } = await this.db().from("market_prices").upsert(prices, { onConflict: "contract_id" });
+    if (error) throw error;
+  }
 
   // Realized P&L Events
   async getRealizedPnLEvents() {
@@ -273,7 +278,12 @@ export class SupabaseRepository implements DataRepository {
   }
 
   // Audit Log
-  async getAuditEvents() {
+  async getAuditEvents(limit?: number) {
+    if (limit !== undefined) {
+      const { data, error } = await this.db().from("audit_events").select("*").order("timestamp", { ascending: false }).limit(limit);
+      if (error) throw error;
+      return (data ?? []) as AuditEvent[];
+    }
     return this.fetchAllPages<AuditEvent>((from, to) =>
       this.db().from("audit_events").select("*").order("timestamp", { ascending: false }).range(from, to)
     );

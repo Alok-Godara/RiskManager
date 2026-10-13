@@ -77,6 +77,8 @@ export interface DataRepository {
   getMarketPrices(): Promise<MarketPrice[]>;
   getMarketPrice(contractId: UUID): Promise<MarketPrice | undefined>;
   upsertMarketPrice(price: MarketPrice): Promise<void>;
+  /** Same as upsertMarketPrice, one round trip for the whole batch. */
+  upsertMarketPrices(prices: MarketPrice[]): Promise<void>;
 
   // Realized P&L Events (regenerated wholesale for a leg whenever its
   // execution history changes, e.g. on entry edit/delete)
@@ -96,7 +98,8 @@ export interface DataRepository {
   addStopLossRecord(record: StopLossRecord): Promise<void>;
 
   // Audit Log
-  getAuditEvents(): Promise<AuditEvent[]>;
+  /** Newest first. `limit` caps how many come back (the log only ever grows). */
+  getAuditEvents(limit?: number): Promise<AuditEvent[]>;
   addAuditEvent(event: AuditEvent): Promise<void>;
 
   // API Config

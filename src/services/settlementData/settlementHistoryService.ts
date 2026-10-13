@@ -41,7 +41,34 @@ function refdataSymbolFor(instrument: Instrument): string {
  * DIFFERENT product-code convention than QuantHub's (Brent is "CO" on
  * QuantHub but "BRN" here), so this never reuses services/quantHub/symbols.ts.
  */
+/**
+ * Settlement prices are published once a day, yet every correlation/VaR
+ * computation used to download the whole stored history (~1 MB) twice — once to
+ * see what was missing, once to use it — each time any open page recomputed.
+ * That is pure waste against the free database's egress limit, so both are
+ * cached for this long; a new day's settlement is picked up within it.
+ */
+const SETTLEMENT_CACHE_MS = 30 * 60_000;
+
 export class SettlementHistoryService {
+  private static cache = new Map<string, { at: number; rows: SettlementPrice[] }>();
+  private static lastEnsured = new Map<string, number>();
+
+  private static key(ids: UUID[]): string {
+    return [...ids].sort().join(",");
+  }
+
+  /** Stored settlement rows for these contracts, served from memory for SETTLEMENT_CACHE_MS. */
+  static async getSettlements(contractIds: UUID[]): Promise<SettlementPrice[]> {
+    if (contractIds.length === 0) return [];
+    const key = this.key(contractIds);
+    const hit = this.cache.get(key);
+    if (hit && Date.now() - hit.at < SETTLEMENT_CACHE_MS) return hit.rows;
+    const rows = await repository.getSettlementPricesByContracts(contractIds);
+    this.cache.set(key, { at: Date.now(), rows });
+    return rows;
+  }
+
   /**
    * Ensures at least `days` trading days of settlement history exist for
    * `contracts` (outrights only — callers should already have decomposed
@@ -54,12 +81,18 @@ export class SettlementHistoryService {
     const outrights = contracts.filter((c) => !c.kind || c.kind === "Outright");
     if (outrights.length === 0) return;
 
+    // Checked recently for this exact set of contracts? Then nothing new can
+    // have been published — skip the read, the fetch and the prune entirely.
+    const ensureKey = `${days}:${this.key(outrights.map((c) => c.id))}`;
+    const lastEnsured = this.lastEnsured.get(ensureKey);
+    if (lastEnsured !== undefined && Date.now() - lastEnsured < SETTLEMENT_CACHE_MS) return;
+
     const mostRecent = previousTradingDay(new Date());
     const dates = tradingDaysIncluding(mostRecent, days); // oldest..newest
     const dateStrs = dates.map(formatDateParam);
     const oldestNeeded = dateStrs[0];
 
-    const existing = await repository.getSettlementPricesByContracts(outrights.map((c) => c.id));
+    const existing = await this.getSettlements(outrights.map((c) => c.id));
     const haveKey = new Set(existing.map((s) => `${s.contract_id}::${s.date}`));
 
     const missingDates = dateStrs.filter((dateStr) => outrights.some((c) => !haveKey.has(`${c.id}::${dateStr}`)));
@@ -97,9 +130,13 @@ export class SettlementHistoryService {
             });
           }
         }
-        if (records.length > 0) await repository.upsertSettlementPrices(records);
+        if (records.length > 0) {
+          await repository.upsertSettlementPrices(records);
+          this.cache.clear(); // new rows stored — the next read must see them
+        }
       }
     }
+    this.lastEnsured.set(ensureKey, Date.now());
 
     try {
       await repository.deleteSettlementPricesBefore(oldestNeeded);

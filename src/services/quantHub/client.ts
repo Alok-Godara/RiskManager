@@ -86,7 +86,7 @@ export const QUANTHUB_RATE_LIMIT_PER_MINUTE = 30;
  * the worker is alive, see MarketDataService.setDeferToWorker).
  */
 export const QUANTHUB_WORKER_REQUESTS_PER_MINUTE = 20;
-export const QUANTHUB_BROWSER_REQUESTS_PER_MINUTE = 10;
+export const QUANTHUB_BROWSER_REQUESTS_PER_MINUTE = 4;
 
 /** Poll interval for a given requests-per-minute target, plus a small margin for timer jitter. */
 export function quantHubPollIntervalMs(requestsPerMinute: number): number {

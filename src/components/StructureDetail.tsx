@@ -1,9 +1,8 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import type { Contract, Execution, EntrySnapshot, Instrument, StructureSnapshot, StructureTemplate } from "../types/domain";
-import { EntryEngine } from "../engines/EntryEngine";
+import { EntryEngine, type EntryInputs } from "../engines/EntryEngine";
 import { StructureEngine } from "../engines/StructureEngine";
 import { contractLifecycleStatus } from "../utils/contractExpiry";
-import { repository } from "../data";
 import { fmtMoney, fmtPrice, pnlClass, statusLabel } from "../utils/format";
 import { tradeStatusBadgeClass } from "../utils/tradeDirection";
 import { IconChevronLeft, IconPencil } from "./icons";
@@ -117,18 +116,42 @@ export function StructureDetail({
   const { loading: varLoading, valueAtRisk: structureVar } = useStructureValueAtRisk(snapshot, contracts, templates, instruments);
   const holdsPosition = legs.some((l) => Math.abs(l.position.net_quantity) > 1e-9);
 
+  // The executions behind the Entries table are read from the database only when
+  // this trade's position actually changes (it is keyed on the legs' quantities,
+  // prices and last-updated stamps). Live prices then just re-derive the rows
+  // in memory — re-querying on every price tick was a big part of the
+  // free-tier data usage.
+  const positionSignature = legs
+    .map((l) => `${l.leg.id}:${l.position.net_quantity}:${l.position.average_price}:${l.position.realized_pnl}:${l.position.last_updated}`)
+    .join("|");
+  const [entryInputs, setEntryInputs] = useState<EntryInputs | null>(null);
+
   useEffect(() => {
-    EntryEngine.buildEntrySnapshots(snapshot).then(setEntries);
-    Promise.all(legs.map((l) => repository.getExecutionsByLeg(l.leg.id))).then((lists) => {
+    let cancelled = false;
+    EntryEngine.loadInputs(snapshot).then((inputs) => {
+      if (!cancelled) setEntryInputs(inputs);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [structure.id, positionSignature]);
+
+  useEffect(() => {
+    if (!entryInputs) return;
+    setEntries(EntryEngine.buildFromInputs(snapshot, entryInputs));
+  }, [snapshot, entryInputs]);
+
+  const derivedOtherExecutions = useMemo(
+    () =>
       // Entry-type executions get their own aggregated "Entries" table above
       // (see EntryEngine) — this table is exits + any non-Active history.
-      const merged = lists
-        .flat()
-        .filter((e) => e.execution_type !== "Entry")
-        .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-      setOtherExecutions(merged);
-    });
-  }, [structure.id, snapshot, legs]);
+      (entryInputs?.executions ?? []).filter((e) => e.execution_type !== "Entry").sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
+    [entryInputs]
+  );
+  useEffect(() => {
+    setOtherExecutions(derivedOtherExecutions);
+  }, [derivedOtherExecutions]);
 
   useEffect(() => {
     setNameDraft(structure.name);

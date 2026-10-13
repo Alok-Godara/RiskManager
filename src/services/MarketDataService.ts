@@ -1,5 +1,6 @@
 import type { Contract, MarketPrice, UUID } from "../types/domain";
 import { repository } from "../data";
+import { isWeekendPause } from "../utils/marketHours";
 
 /** One provider-supplied mark for a contract. */
 export interface PriceQuote {
@@ -74,7 +75,7 @@ export class SimulatedProvider implements MarketDataProvider {
 /** Health of the last price refresh, for display in the UI. */
 export interface MarketDataStatus {
   providerName: string;
-  state: "idle" | "ok" | "partial" | "error" | "rate_limited";
+  state: "idle" | "ok" | "partial" | "error" | "rate_limited" | "paused";
   lastSuccessAt?: string;
   /** ISO time the newest price is "as of" (candle time), when the provider reports one. */
   quoteAsOf?: string;
@@ -86,6 +87,22 @@ export interface MarketDataStatus {
 }
 
 type Listener = () => void;
+/** Update listeners may receive the full current price list (when it was just read), so they need not read it again. */
+type UpdateListener = (prices?: MarketPrice[]) => void;
+
+/**
+ * Egress/request budget: a price that has not changed is NOT rewritten on every
+ * poll (that was ~13 upserts every 3 seconds, around the clock). It is
+ * rewritten when it changes, or at least this often so its timestamp keeps
+ * proving the writer is alive (browser tabs treat a worker price younger than
+ * WORKER_FRESH_MS as "worker is running" — keep this comfortably below it).
+ */
+const UNCHANGED_REWRITE_MS = 20_000;
+
+/** True while this is a browser tab the user can't see (locked screen, other tab) — nothing needs updating then. */
+function pageIsHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
 
 /**
  * Appended to the `source` of every price the background price worker
@@ -138,7 +155,9 @@ function asRateLimitSignal(err: unknown): RateLimitSignal | undefined {
 class MarketDataServiceImpl {
   private provider: MarketDataProvider = new SimulatedProvider();
   private intervalId: ReturnType<typeof setInterval> | null = null;
-  private listeners = new Set<Listener>();
+  private listeners = new Set<UpdateListener>();
+  /** What was last written per contract, to skip rewriting an unchanged price. */
+  private lastWritten = new Map<string, { price: number; at: number }>();
   private statusListeners = new Set<Listener>();
   private pollMs = 4000;
   private status: MarketDataStatus = {
@@ -163,14 +182,14 @@ class MarketDataServiceImpl {
     this.deferToWorker = defer;
   }
 
-  /** The prices the background worker wrote within the last WORKER_FRESH_MS — empty if it isn't (visibly) running. */
-  private async freshWorkerPrices(): Promise<MarketPrice[]> {
+  /** Every stored price, and of those the ones the background worker wrote within the last WORKER_FRESH_MS (empty if it isn't visibly running). */
+  private async readWorkerPrices(): Promise<{ all: MarketPrice[]; fresh: MarketPrice[] }> {
     try {
-      const prices = await repository.getMarketPrices();
+      const all = await repository.getMarketPrices();
       const now = Date.now();
-      return prices.filter((p) => p.source.endsWith(WORKER_SOURCE_TAG) && now - Date.parse(p.timestamp) < WORKER_FRESH_MS);
+      return { all, fresh: all.filter((p) => p.source.endsWith(WORKER_SOURCE_TAG) && now - Date.parse(p.timestamp) < WORKER_FRESH_MS) };
     } catch {
-      return [];
+      return { all: [], fresh: [] };
     }
   }
 
@@ -193,7 +212,7 @@ class MarketDataServiceImpl {
   }
 
   /** Fires when prices changed (drives a data reload). */
-  onUpdate(listener: Listener): () => void {
+  onUpdate(listener: UpdateListener): () => void {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
@@ -208,8 +227,8 @@ class MarketDataServiceImpl {
     };
   }
 
-  private notify() {
-    this.listeners.forEach((l) => l());
+  private notify(prices?: MarketPrice[]) {
+    this.listeners.forEach((l) => l(prices));
   }
 
   /** Fetch once for the given contracts and persist to the repository. */
@@ -221,6 +240,9 @@ class MarketDataServiceImpl {
       const timestamp = new Date().toISOString();
       let priced = 0;
       let newestAsOf = 0;
+      const toWrite: MarketPrice[] = [];
+      let anyChanged = false;
+      const nowMs = Date.now();
 
       for (const contract of contracts) {
         const quote = quotes[contract.id];
@@ -234,9 +256,17 @@ class MarketDataServiceImpl {
           source: (quote.source ?? this.provider.name) + this.sourceTag,
           timestamp,
         };
-        await repository.upsertMarketPrice(marketPrice);
+        const previous = this.lastWritten.get(contract.id);
+        const changed = !previous || previous.price !== quote.price;
+        if (changed) anyChanged = true;
+        if (changed || nowMs - previous!.at >= UNCHANGED_REWRITE_MS) {
+          toWrite.push(marketPrice);
+          this.lastWritten.set(contract.id, { price: quote.price, at: nowMs });
+        }
         priced++;
       }
+      // One request for the whole batch, and none at all when nothing is due.
+      if (toWrite.length > 0) await repository.upsertMarketPrices(toWrite);
 
       this.setStatus({
         providerName: this.provider.name,
@@ -252,7 +282,7 @@ class MarketDataServiceImpl {
       });
 
       this.consecutiveRateLimits = 0;
-      if (priced > 0) this.notify();
+      if (anyChanged) this.notify();
     } catch (err) {
       const rateLimit = asRateLimitSignal(err);
       if (rateLimit) {
@@ -314,12 +344,31 @@ class MarketDataServiceImpl {
       // Skip entirely while backing off from a rate limit — no request at
       // all, not even a cheap one, until the cooldown passes.
       if (Date.now() < this.cooldownUntil) return;
+      // A hidden tab (locked screen, another tab in front) has nobody to show
+      // prices to — don't spend requests or data on it. Catches up the moment
+      // the tab is visible again (see useRiskManagerData).
+      if (pageIsHidden()) return;
+      // Weekend: the exchanges are closed and prices cannot move — nothing to
+      // fetch or write (the stored prices simply stay as of Friday's close).
+      if (isWeekendPause()) {
+        if (this.status.state !== "paused") {
+          this.setStatus({
+            providerName: this.provider.name,
+            state: "paused",
+            lastSuccessAt: this.status.lastSuccessAt,
+            quoteAsOf: this.status.quoteAsOf,
+            pricedCount: this.status.pricedCount,
+            requestedCount: this.status.requestedCount,
+          });
+        }
+        return;
+      }
       busy = true;
       try {
         // The worker is already polling QuantHub: don't spend the rate-limit
         // budget twice — just tell the UI to re-read the fresh prices.
         if (this.deferToWorker) {
-          const fresh = await this.freshWorkerPrices();
+          const { all, fresh } = await this.readWorkerPrices();
           if (fresh.length > 0) {
             // Report the worker's feed as this tab's feed health, so the
             // sidebar shows "Live" instead of a stuck "waiting" state.
@@ -332,7 +381,7 @@ class MarketDataServiceImpl {
               pricedCount: fresh.length,
               requestedCount: fresh.length,
             });
-            this.notify();
+            this.notify(all);
             return;
           }
         }

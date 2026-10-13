@@ -1,10 +1,13 @@
 import type {
+  Contract,
   Position,
   Instrument,
   Structure,
+  StructureLeg,
   LegSnapshot,
   StructureSnapshot,
   Execution,
+  MarketPrice,
   StructureTemplate,
   UUID,
 } from "../types/domain";
@@ -12,12 +15,26 @@ import { repository } from "../data";
 import { TransactionCostEngine } from "./TransactionCostEngine";
 import { EntryEngine } from "./EntryEngine";
 
-/** Reference data shared across every structure in one snapshot pass, fetched once instead of per structure/leg. */
-interface TcContext {
-  instrumentsById: Map<UUID, Instrument>;
-  templatesById: Map<UUID, StructureTemplate>;
-  executionsByLeg: Map<UUID, Execution[]>;
+/**
+ * Everything a snapshot pass needs, fetched ONCE in bulk. Static data (all but
+ * `prices`) changes only when you act on a trade, so the app keeps it and
+ * rebuilds snapshots from fresh prices alone on every price tick — see
+ * hooks/useRiskManagerData.ts. (It used to re-query per structure and per leg
+ * on every tick, ~100 requests and a few hundred KB each time.)
+ */
+export interface SnapshotData {
+  structures: Structure[];
+  legs: StructureLeg[];
+  contracts: Contract[];
+  instruments: Instrument[];
+  templates: StructureTemplate[];
+  positions: Position[];
+  executions: Execution[];
+  prices: MarketPrice[];
 }
+
+/** The part of SnapshotData that does not change with prices. */
+export type StaticSnapshotData = Omit<SnapshotData, "prices">;
 
 /**
  * PnLEngine: computes realized, unrealized, and total P&L at the entry,
@@ -44,111 +61,132 @@ export class PnLEngine {
     return position.net_quantity * currentPrice;
   }
 
-  /** Build a full snapshot for one structure: legs, positions, live P&L, risk headroom. */
-  static async buildStructureSnapshot(structure: Structure, tcContext?: TcContext): Promise<StructureSnapshot> {
-    const legs = await repository.getLegsByStructure(structure.id);
-    const instrument = await repository.getInstrument(structure.instrument_id);
-
-    const legSnapshots: LegSnapshot[] = [];
-    const entryTimestamps: string[] = [];
-    const structureExecutions: Execution[] = [];
-    for (const leg of legs) {
-      const contract = await repository.getContract(leg.contract_id);
-      if (!contract) continue;
-      const position =
-        (await repository.getPositionByLeg(leg.id)) ??
-        ({
-          structure_leg_id: leg.id,
-          contract_id: leg.contract_id,
-          net_quantity: 0,
-          average_price: 0,
-          realized_pnl: 0,
-          last_updated: new Date().toISOString(),
-        } as Position);
-      const marketPrice = await repository.getMarketPrice(leg.contract_id);
-
-      // Transaction cost: half the round-turn rate on every active fill (entry
-      // and exit). The rate comes from the LEG's own contract's instrument.
-      const legExecutions = tcContext ? (tcContext.executionsByLeg.get(leg.id) ?? []) : await repository.getExecutionsByLeg(leg.id);
-      const legInstrument = tcContext?.instrumentsById.get(contract.instrument_id) ?? (await repository.getInstrument(contract.instrument_id));
-      const templatesById = tcContext?.templatesById ?? new Map((await repository.getStructureTemplates()).map((t) => [t.id, t]));
-      const transactionCost = TransactionCostEngine.legCost(legExecutions, contract, legInstrument, templatesById);
-      const projectedExitCost = TransactionCostEngine.projectedExitCost(Math.abs(position.net_quantity), contract, legInstrument, templatesById);
-      structureExecutions.push(...legExecutions);
-      for (const e of legExecutions) {
-        if (e.execution_type === "Entry" && (e.status ?? "Active") === "Active") entryTimestamps.push(e.timestamp);
-      }
-
-      const unrealized = instrument
-        ? this.unrealizedPnl(position, marketPrice?.price, instrument)
-        : 0;
-
-      legSnapshots.push({
-        leg,
-        contract,
-        position,
-        current_price: marketPrice?.price,
-        unrealized_pnl: unrealized,
-        market_value: this.marketValue(position, marketPrice?.price),
-        transaction_cost: transactionCost,
-        projected_exit_cost: projectedExitCost,
-      });
-    }
-
-    const totalRealized = legSnapshots.reduce((s, l) => s + l.position.realized_pnl, 0);
-    const totalUnrealized = legSnapshots.reduce((s, l) => s + l.unrealized_pnl, 0);
-    const totalPnl = totalRealized + totalUnrealized;
-    const entryStats = EntryEngine.activeEntryStats(structureExecutions);
-    const stopUsage = EntryEngine.worstStopUsage(
-      structureExecutions,
-      new Map(legSnapshots.map((l) => [l.leg.id, l.current_price])),
-      instrument ? instrument.tick_value / instrument.tick_size : 0
-    );
-    const totalTransactionCost = legSnapshots.reduce((s, l) => s + l.transaction_cost, 0);
-    const projectedExitCost = legSnapshots.reduce((s, l) => s + l.projected_exit_cost, 0);
-
-    const remainingRiskCapacity = structure.current_dollar_risk + totalPnl;
-
-    return {
-      structure,
-      legs: legSnapshots,
-      total_realized_pnl: totalRealized,
-      total_unrealized_pnl: totalUnrealized,
-      total_pnl: totalPnl,
-      remaining_risk_capacity: remainingRiskCapacity,
-      total_transaction_cost: totalTransactionCost,
-      net_realized_pnl: totalRealized - totalTransactionCost,
-      projected_exit_cost: projectedExitCost,
-      net_pnl: totalRealized - totalTransactionCost + totalUnrealized - projectedExitCost,
-      entry_timestamps: entryTimestamps,
-      active_risk: entryStats.activeRisk,
-      open_entry_count: entryStats.openEntries,
-      stop_usage: stopUsage,
-    };
-  }
-
-  static async buildAllStructureSnapshots(): Promise<StructureSnapshot[]> {
-    const [structures, instruments, templates, executions] = await Promise.all([
+  /** One bulk read of everything snapshots are built from (a handful of requests, not one per leg). */
+  static async loadStaticData(): Promise<StaticSnapshotData> {
+    const [structures, legs, contracts, instruments, templates, positions, executions] = await Promise.all([
       repository.getStructures(),
+      repository.getAllLegs(),
+      repository.getContracts(),
       repository.getInstruments(),
       repository.getStructureTemplates(),
+      repository.getPositions(),
       repository.getAllExecutions(),
     ]);
+    return { structures, legs, contracts, instruments, templates, positions, executions };
+  }
+
+  /**
+   * Builds every structure's snapshot — legs, positions, live P&L, costs,
+   * risk — from already-loaded data. Pure and synchronous: calling it again
+   * with new prices is free (no I/O), which is what the live price ticks do.
+   */
+  static buildSnapshots(data: SnapshotData): StructureSnapshot[] {
+    const contractsById = new Map(data.contracts.map((c) => [c.id, c]));
+    const instrumentsById = new Map(data.instruments.map((i) => [i.id, i]));
+    const templatesById = new Map(data.templates.map((t) => [t.id, t]));
+    const positionByLeg = new Map(data.positions.map((p) => [p.structure_leg_id, p]));
+    const priceByContract = new Map(data.prices.map((p) => [p.contract_id, p]));
+
+    const legsByStructure = new Map<UUID, StructureLeg[]>();
+    for (const leg of data.legs) {
+      const list = legsByStructure.get(leg.structure_id) ?? [];
+      list.push(leg);
+      legsByStructure.set(leg.structure_id, list);
+    }
     const executionsByLeg = new Map<UUID, Execution[]>();
-    for (const e of executions) {
+    for (const e of data.executions) {
       const list = executionsByLeg.get(e.structure_leg_id) ?? [];
       list.push(e);
       executionsByLeg.set(e.structure_leg_id, list);
     }
-    const tcContext: TcContext = {
-      instrumentsById: new Map(instruments.map((i) => [i.id, i])),
-      templatesById: new Map(templates.map((t) => [t.id, t])),
-      executionsByLeg,
-    };
-    const snapshots: StructureSnapshot[] = [];
-    for (const s of structures) {
-      snapshots.push(await this.buildStructureSnapshot(s, tcContext));
-    }
-    return snapshots;
+
+    return data.structures.map((structure) => {
+      const legs = legsByStructure.get(structure.id) ?? [];
+      const instrument = instrumentsById.get(structure.instrument_id);
+
+      const legSnapshots: LegSnapshot[] = [];
+      const entryTimestamps: string[] = [];
+      const structureExecutions: Execution[] = [];
+      for (const leg of legs) {
+        const contract = contractsById.get(leg.contract_id);
+        if (!contract) continue;
+        const position: Position =
+          positionByLeg.get(leg.id) ?? {
+            structure_leg_id: leg.id,
+            contract_id: leg.contract_id,
+            net_quantity: 0,
+            average_price: 0,
+            realized_pnl: 0,
+            last_updated: new Date().toISOString(),
+          };
+        const marketPrice = priceByContract.get(leg.contract_id);
+
+        // Transaction cost: half the round-turn rate on every active fill (entry
+        // and exit). The rate comes from the LEG's own contract's instrument.
+        const legExecutions = executionsByLeg.get(leg.id) ?? [];
+        const legInstrument = instrumentsById.get(contract.instrument_id);
+        const transactionCost = TransactionCostEngine.legCost(legExecutions, contract, legInstrument, templatesById);
+        const projectedExitCost = TransactionCostEngine.projectedExitCost(
+          Math.abs(position.net_quantity),
+          contract,
+          legInstrument,
+          templatesById
+        );
+        structureExecutions.push(...legExecutions);
+        for (const e of legExecutions) {
+          if (e.execution_type === "Entry" && (e.status ?? "Active") === "Active") entryTimestamps.push(e.timestamp);
+        }
+
+        const unrealized = instrument ? this.unrealizedPnl(position, marketPrice?.price, instrument) : 0;
+
+        legSnapshots.push({
+          leg,
+          contract,
+          position,
+          current_price: marketPrice?.price,
+          unrealized_pnl: unrealized,
+          market_value: this.marketValue(position, marketPrice?.price),
+          transaction_cost: transactionCost,
+          projected_exit_cost: projectedExitCost,
+        });
+      }
+
+      const totalRealized = legSnapshots.reduce((s, l) => s + l.position.realized_pnl, 0);
+      const totalUnrealized = legSnapshots.reduce((s, l) => s + l.unrealized_pnl, 0);
+      const totalPnl = totalRealized + totalUnrealized;
+      const entryStats = EntryEngine.activeEntryStats(structureExecutions);
+      const stopUsage = EntryEngine.worstStopUsage(
+        structureExecutions,
+        new Map(legSnapshots.map((l) => [l.leg.id, l.current_price])),
+        instrument ? instrument.tick_value / instrument.tick_size : 0
+      );
+      const totalTransactionCost = legSnapshots.reduce((s, l) => s + l.transaction_cost, 0);
+      const projectedExitCost = legSnapshots.reduce((s, l) => s + l.projected_exit_cost, 0);
+
+      const remainingRiskCapacity = structure.current_dollar_risk + totalPnl;
+
+      return {
+        structure,
+        legs: legSnapshots,
+        total_realized_pnl: totalRealized,
+        total_unrealized_pnl: totalUnrealized,
+        total_pnl: totalPnl,
+        remaining_risk_capacity: remainingRiskCapacity,
+        total_transaction_cost: totalTransactionCost,
+        net_realized_pnl: totalRealized - totalTransactionCost,
+        projected_exit_cost: projectedExitCost,
+        net_pnl: totalRealized - totalTransactionCost + totalUnrealized - projectedExitCost,
+        entry_timestamps: entryTimestamps,
+        active_risk: entryStats.activeRisk,
+        open_entry_count: entryStats.openEntries,
+        stop_usage: stopUsage,
+      };
+    });
+  }
+
+  /** Convenience for one-off callers: load everything (static + prices) and build. */
+  static async buildAllStructureSnapshots(): Promise<StructureSnapshot[]> {
+    const [staticData, prices] = await Promise.all([this.loadStaticData(), repository.getMarketPrices()]);
+    return this.buildSnapshots({ ...staticData, prices });
   }
 }

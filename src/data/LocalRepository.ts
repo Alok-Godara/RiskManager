@@ -148,6 +148,9 @@ export class LocalRepository implements DataRepository {
   async upsertMarketPrice(price: MarketPrice) {
     return putOne("market_prices", price, price.contract_id);
   }
+  async upsertMarketPrices(prices: MarketPrice[]) {
+    for (const p of prices) await putOne("market_prices", p, p.contract_id);
+  }
 
   // Realized P&L Events
   async getRealizedPnLEvents() {
@@ -191,9 +194,10 @@ export class LocalRepository implements DataRepository {
   }
 
   // Audit Log
-  async getAuditEvents() {
+  async getAuditEvents(limit?: number) {
     const all = await getAll<AuditEvent>("audit_events");
-    return all.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    const sorted = all.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    return limit !== undefined ? sorted.slice(0, limit) : sorted;
   }
   async addAuditEvent(event: AuditEvent) {
     return putOne("audit_events", event);

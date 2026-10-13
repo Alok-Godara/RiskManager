@@ -147,7 +147,7 @@ export async function buildCorrelationContext(
 
   const mostRecent = previousTradingDay(new Date());
   const tradingDates = tradingDaysIncluding(mostRecent, historyTradingDays).map(formatDateParam);
-  const settlements = await repository.getSettlementPricesByContracts(Array.from(neededOutrights.keys()));
+  const settlements = await SettlementHistoryService.getSettlements(Array.from(neededOutrights.keys()));
 
   const touchedContractIds = new Set<UUID>();
   const openStructures = openStructuresWithLegs.map(({ structure, legs }) => {

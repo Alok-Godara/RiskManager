@@ -1,7 +1,14 @@
-import type { Execution, EntrySnapshot, LegSnapshot, StructureSnapshot, UUID } from "../types/domain";
+import type { Execution, EntrySnapshot, LegSnapshot, RealizedPnLEvent, StructureSnapshot, UUID } from "../types/domain";
 import { repository } from "../data";
 
 const EPS = 1e-9;
+
+export interface EntryInputs {
+  dollarPerPriceUnit: number;
+  /** Every execution on the structure's legs, all statuses (Active, Edited, Deleted). */
+  executions: Execution[];
+  realizedEvents: RealizedPnLEvent[];
+}
 
 /**
  * EntryEngine: groups the flat, per-leg Execution audit trail back into
@@ -108,18 +115,39 @@ export class EntryEngine {
     return worst;
   }
 
-  static async buildEntrySnapshots(snapshot: StructureSnapshot): Promise<EntrySnapshot[]> {
+  /**
+   * The raw rows entry snapshots are built from — every execution (all
+   * statuses) and realized-P&L event of the structure's legs, plus the $ per
+   * price unit. Only changes when the position does, so callers keep it and
+   * call buildFromInputs again as live prices move, without re-querying.
+   */
+  static async loadInputs(snapshot: StructureSnapshot): Promise<EntryInputs> {
     const instrument = await repository.getInstrument(snapshot.structure.instrument_id);
-    const dollarPerPriceUnit = instrument ? instrument.tick_value / instrument.tick_size : 0;
+    const [executionLists, realizedEventLists] = await Promise.all([
+      Promise.all(snapshot.legs.map((l) => repository.getExecutionsByLeg(l.leg.id))),
+      Promise.all(snapshot.legs.map((l) => repository.getRealizedPnLEventsByLeg(l.leg.id))),
+    ]);
+    return {
+      dollarPerPriceUnit: instrument ? instrument.tick_value / instrument.tick_size : 0,
+      executions: executionLists.flat(),
+      realizedEvents: realizedEventLists.flat(),
+    };
+  }
+
+  static async buildEntrySnapshots(snapshot: StructureSnapshot): Promise<EntrySnapshot[]> {
+    return this.buildFromInputs(snapshot, await this.loadInputs(snapshot));
+  }
+
+  /** Pure and synchronous: build the Entries table rows from already-loaded inputs and the snapshot's current prices. */
+  static buildFromInputs(snapshot: StructureSnapshot, inputs: EntryInputs): EntrySnapshot[] {
+    const dollarPerPriceUnit = inputs.dollarPerPriceUnit;
 
     const legById = new Map(snapshot.legs.map((l) => [l.leg.id, l]));
-    const executionLists = await Promise.all(snapshot.legs.map((l) => repository.getExecutionsByLeg(l.leg.id)));
-    const allActive = executionLists.flat().filter((e) => e.status === "Active");
+    const allActive = inputs.executions.filter((e) => e.status === "Active");
     const entryExecutions = allActive.filter((e) => e.execution_type === "Entry");
     const exitExecutions = allActive.filter((e) => e.execution_type !== "Entry");
 
-    const realizedEventLists = await Promise.all(snapshot.legs.map((l) => repository.getRealizedPnLEventsByLeg(l.leg.id)));
-    const allRealizedEvents = realizedEventLists.flat();
+    const allRealizedEvents = inputs.realizedEvents;
 
     const groups = new Map<UUID, Execution[]>();
     for (const ex of entryExecutions) {

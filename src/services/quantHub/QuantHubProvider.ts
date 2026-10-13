@@ -21,7 +21,7 @@ import { buildCompositeQuantHubCode, quantHubProductCode, toQuantHubCode } from 
  * list) changes rarely but would otherwise be re-read on every poll. Cache
  * it briefly so a 1s price loop doesn't hammer Supabase.
  */
-const REF_DATA_TTL_MS = 60_000;
+const REF_DATA_TTL_MS = 10 * 60_000;
 
 interface RefData {
   instruments: Map<UUID, Instrument>;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Instrument, InstrumentNetPositionRow, StructureSnapshot } from "../types/domain";
 import { InstrumentEngine } from "../engines/InstrumentEngine";
 import { fmtMoney } from "../utils/format";
@@ -17,10 +17,19 @@ export function InstrumentDashboard({
     if (!selectedId && instruments.length > 0) setSelectedId(instruments[0].id);
   }, [instruments, selectedId]);
 
+  // Net positions only change with the lots held, not with prices — re-query on that.
+  const positionSignature = useMemo(
+    () =>
+      snapshots
+        .map((s) => `${s.structure.id}:${s.structure.status}:${s.legs.map((l) => `${l.leg.id}=${l.position.net_quantity}`).join(",")}`)
+        .join("|"),
+    [snapshots]
+  );
   useEffect(() => {
     if (!selectedId) return;
     InstrumentEngine.netPositionByInstrument(selectedId).then(setRows);
-  }, [selectedId, snapshots]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, positionSignature]);
 
   const relevantSnapshots = snapshots.filter(
     (s) => s.structure.instrument_id === selectedId && s.structure.status !== "Fully Closed"

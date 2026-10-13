@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { repository, isCloudConfigured } from "../data";
 import { seedIfEmpty } from "../data/seed";
 import { runMigrations } from "../data/migrate";
 import { MarketDataService } from "../services/MarketDataService";
-import { getRequiredContracts } from "../services/requiredContracts";
+import { getRequiredContracts, invalidateRequiredContracts } from "../services/requiredContracts";
 import { QuantHubProvider } from "../services/quantHub/QuantHubProvider";
 import { QUANTHUB_BROWSER_REQUESTS_PER_MINUTE, quantHubPollIntervalMs } from "../services/quantHub/client";
-import { PnLEngine } from "../engines/PnLEngine";
+import { PnLEngine, type StaticSnapshotData } from "../engines/PnLEngine";
 import { PortfolioEngine } from "../engines/PortfolioEngine";
 import type {
   Instrument,
@@ -16,7 +16,27 @@ import type {
   StructureSnapshot,
   PortfolioSummary,
   AuditEvent,
+  MarketPrice,
 } from "../types/domain";
+
+/**
+ * Data budget. Supabase's free plan allows 5 GB of egress a month, and the app
+ * used to blow through it by re-reading every table on every price tick, in
+ * every open tab. Now:
+ *   - everything that only changes when YOU act on a trade (trades, legs,
+ *     positions, executions, contracts, ...) is read once and kept — a "full
+ *     reload" happens on load, after any change you make, and every
+ *     FULL_RELOAD_MS as a safety net;
+ *   - a price tick re-reads only the (tiny) price table and recomputes P&L in
+ *     memory — and not more often than PRICE_REFRESH_MIN_MS;
+ *   - a hidden tab (locked screen, another tab in front) does neither.
+ */
+const FULL_RELOAD_MS = 5 * 60_000;
+const PRICE_REFRESH_MIN_MS = 10_000;
+/** The history log only ever grows; the screen needs the recent part. */
+const AUDIT_EVENT_LIMIT = 300;
+
+const pageHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
 
 export function useRiskManagerData() {
   const [instruments, setInstruments] = useState<Instrument[]>([]);
@@ -28,25 +48,50 @@ export function useRiskManagerData() {
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const reload = useCallback(async () => {
-    const [inst, cons, tmpl, structs, snaps, audit] = await Promise.all([
-      repository.getInstruments(),
-      repository.getContracts(),
-      repository.getStructureTemplates(),
-      repository.getStructures(),
-      PnLEngine.buildAllStructureSnapshots(),
-      repository.getAuditEvents(),
-    ]);
-    const summary = PortfolioEngine.summarize(snaps);
-    setInstruments(inst);
-    setContracts(cons);
-    setTemplates(tmpl);
-    setStructures(structs);
+  const staticRef = useRef<StaticSnapshotData | null>(null);
+  const lastFullReloadRef = useRef(0);
+  const lastPriceRefreshRef = useRef(0);
+
+  const applySnapshots = useCallback((staticData: StaticSnapshotData, prices: MarketPrice[]) => {
+    const snaps = PnLEngine.buildSnapshots({ ...staticData, prices });
     setSnapshots(snaps);
-    setPortfolio(summary);
+    setPortfolio(PortfolioEngine.summarize(snaps));
+  }, []);
+
+  /** Full read of everything. Called on load, after any change you make, and on a slow timer. */
+  const reload = useCallback(async () => {
+    const [staticData, prices, audit] = await Promise.all([
+      PnLEngine.loadStaticData(),
+      repository.getMarketPrices(),
+      repository.getAuditEvents(AUDIT_EVENT_LIMIT),
+    ]);
+    staticRef.current = staticData;
+    lastFullReloadRef.current = Date.now();
+    lastPriceRefreshRef.current = Date.now();
+    invalidateRequiredContracts(); // so a trade you just added/closed is (un)priced promptly
+
+    setInstruments(staticData.instruments);
+    setContracts(staticData.contracts);
+    setTemplates(staticData.templates);
+    setStructures(staticData.structures);
+    applySnapshots(staticData, prices);
     setAuditEvents(audit);
     setLoading(false);
-  }, []);
+  }, [applySnapshots]);
+
+  /** Price tick: refresh only the prices (given, or one small read) and recompute P&L in memory. */
+  const refreshPrices = useCallback(
+    async (given?: MarketPrice[]) => {
+      const staticData = staticRef.current;
+      if (!staticData || pageHidden()) return;
+      const now = Date.now();
+      if (!given && now - lastPriceRefreshRef.current < PRICE_REFRESH_MIN_MS) return;
+      const prices = given ?? (await repository.getMarketPrices());
+      lastPriceRefreshRef.current = now;
+      applySnapshots(staticData, prices);
+    },
+    [applySnapshots]
+  );
 
   useEffect(() => {
     let unsub: (() => void) | undefined;
@@ -63,23 +108,16 @@ export function useRiskManagerData() {
       // Start continuous market data polling for exactly the contracts
       // required by currently open positions (spec section 3).
       //
-      // QuantHub's /apis/ohlc/ allows 30 requests/minute per token (see
-      // services/quantHub/client.ts). Each poll tick is one OHLC request in
-      // the common case — all required contracts fit in a single batch of
-      // <= MAX_INSTRUMENTS_PER_REQUEST (50) — and a tab aims for 10/minute of
-      // that, leaving room for the background worker and other viewers on the
-      // same token. MarketDataService still backs off gracefully if a 429
-      // slips through anyway. See Settings -> API Configuration for feed health.
-      const quantHubPollMs = quantHubPollIntervalMs(QUANTHUB_BROWSER_REQUESTS_PER_MINUTE);
-      //
-      // If the background price worker is running (see src/worker/), it
-      // already holds the QuantHub budget — this tab then only re-reads the
-      // prices it stores instead of also hitting QuantHub.
+      // A tab polls gently (4 requests/minute): it is only here to show
+      // prices, and the background worker (src/worker/) does the real polling
+      // for everyone. If the worker is running, this tab does not call
+      // QuantHub at all — it only re-reads the stored prices.
+      const pollMs = __QH_CONFIGURED__ ? quantHubPollIntervalMs(QUANTHUB_BROWSER_REQUESTS_PER_MINUTE) : 15_000;
       MarketDataService.setDeferToWorker(true);
-      MarketDataService.start(getRequiredContracts, __QH_CONFIGURED__ ? quantHubPollMs : 4000);
+      MarketDataService.start(getRequiredContracts, pollMs);
 
-      unsub = MarketDataService.onUpdate(() => {
-        reload();
+      unsub = MarketDataService.onUpdate((prices) => {
+        refreshPrices(prices);
       });
     })();
 
@@ -87,30 +125,28 @@ export function useRiskManagerData() {
       MarketDataService.stop();
       if (unsub) unsub();
     };
-  }, [reload]);
+  }, [reload, refreshPrices]);
 
-  // Cloud-only, independent of MarketDataService's own success: a client
-  // that can't reach QuantHub at all (e.g. off the corp network — see
-  // vite.config.ts's proxy, which needs a route to qh-api.corp...) never
-  // gets a `MarketDataService.onUpdate` notification, since that only fires
-  // after a successful QuantHub fetch. Without this, such a client's prices
-  // would sit frozen at whatever was loaded on first page load forever, even
-  // though a DIFFERENT client that CAN reach QuantHub (e.g. an always-on
-  // office machine) keeps writing fresh prices into Supabase's
-  // `market_prices` table on every one of ITS successful polls already
-  // (MarketDataService.refresh -> repository.upsertMarketPrice, no
-  // throttling needed there — more frequent shared writes only help). This
-  // just re-reads whatever's currently in Supabase every 60s regardless, so
-  // a QuantHub-unreachable client still tracks what an always-on reachable
-  // one is publishing. 60s is plenty for a risk dashboard and cheap even
-  // when redundant with a working local QuantHub feed.
+  // Safety net: a slow full re-read (new trades from another tab/person, edits
+  // made elsewhere). Cloud only, visible tabs only.
   useEffect(() => {
     if (!isCloudConfigured) return;
     const id = window.setInterval(() => {
-      reload();
-    }, 60_000);
+      if (!pageHidden()) reload();
+    }, FULL_RELOAD_MS);
     return () => window.clearInterval(id);
   }, [reload]);
+
+  // Catch up the moment a hidden tab becomes visible again.
+  useEffect(() => {
+    const onVisible = () => {
+      if (pageHidden() || !staticRef.current) return;
+      if (Date.now() - lastFullReloadRef.current > FULL_RELOAD_MS) reload();
+      else refreshPrices();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [reload, refreshPrices]);
 
   const activeInstruments = instruments.filter((i) => i.is_active);
   const activeTemplates = templates.filter((t) => t.is_active);
