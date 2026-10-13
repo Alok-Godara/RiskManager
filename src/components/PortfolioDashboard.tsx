@@ -97,7 +97,7 @@ function AlertsSection({ snapshots, onOpenTrade }: { snapshots: StructureSnapsho
     .sort((a, b) => (b.stop_usage?.usage ?? 0) - (a.stop_usage?.usage ?? 0));
 
   const bigProfit = open
-    .map((s) => ({ s, net: s.net_realized_pnl + s.total_unrealized_pnl, initial: s.structure.initial_dollar_risk }))
+    .map((s) => ({ s, net: s.net_pnl, initial: s.structure.initial_dollar_risk }))
     .filter((x) => x.initial > 0 && x.net >= PROFIT_TARGET_MULTIPLE * x.initial - 1e-9)
     .sort((a, b) => b.net / b.initial - a.net / a.initial);
 
@@ -117,7 +117,7 @@ function AlertsSection({ snapshots, onOpenTrade }: { snapshots: StructureSnapsho
         <InfoTip>
           Near stop: an open entry whose loss has used {(NEAR_STOP_FRACTION * 100).toFixed(0)}% or more of the risk you allocated to
           it (100% = its stop loss is hit). Profit target: a trade whose net P&amp;L (realized after costs + unrealized) has
-          reached {PROFIT_TARGET_MULTIPLE}× the initial risk you gave that trade.
+          reached {PROFIT_TARGET_MULTIPLE}× the initial risk you gave that trade (after the cost of exiting it).
         </InfoTip>
       </div>
       {nearStop.length === 0 && bigProfit.length === 0 && (
@@ -194,10 +194,16 @@ export function PortfolioDashboard({
         <div className="stat-card">
           <div className="stat-label">
             Net P&amp;L
-            <InfoTip>Net Realized P&amp;L plus the gross Unrealized P&amp;L.</InfoTip>
+            <InfoTip>
+              What you would end up with if you exited every open position at current prices: Net Realized P&amp;L plus the gross
+              Unrealized P&amp;L, minus the transaction cost still to pay to exit the open lots (their entry side is already inside
+              Net Realized).
+            </InfoTip>
           </div>
           <div className={`stat-value ${pnlClass(summary.net_pnl)}`}>{fmtMoney(summary.net_pnl)}</div>
-          <div className="stat-sub">Net realized + unrealized</div>
+          <div className="stat-sub">
+            {summary.projected_exit_cost > 0 ? `After ${fmtMoney(summary.projected_exit_cost)} exit TC on open lots` : "Net realized + unrealized"}
+          </div>
         </div>
       </div>
 

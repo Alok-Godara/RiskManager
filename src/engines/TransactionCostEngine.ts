@@ -65,6 +65,22 @@ export class TransactionCostEngine {
     return execution.quantity * this.outrightsPerLot(contract, templatesById) * halfRate;
   }
 
+  /**
+   * TC still to pay to exit `openLots` of this leg's contract: the exit
+   * half-rate x outrights-per-lot x open lots. Entry and exit are charged
+   * identically (half the round-turn rate each), so this is exactly what
+   * closing the position at this moment would add to the costs.
+   */
+  static projectedExitCost(
+    openLots: number,
+    contract: Contract | undefined,
+    instrument: Instrument | undefined,
+    templatesById: Map<UUID, StructureTemplate>
+  ): number {
+    if (!(openLots > 0)) return 0;
+    return openLots * this.outrightsPerLot(contract, templatesById) * (this.ratePerOutrightRT(instrument) / 2);
+  }
+
   /** Total TC for a leg's executions. The leg's own contract's instrument sets the rate (so inter-product legs each pay their own product's rate). */
   static legCost(
     executions: Execution[],

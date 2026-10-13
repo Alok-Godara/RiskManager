@@ -218,12 +218,13 @@ export function StructureList({
   const filtersActive =
     filters.search !== "" || filters.period !== "all" || filters.status !== "all" || filters.type !== "";
 
-  // Totals over exactly the trades on screen. Net P&L = realized AFTER transaction
-  // costs + unrealized — the same definition as a trade's own Net P&L card.
+  // Totals over exactly the trades on screen. Net P&L is each trade's own Net P&L
+  // (realized after costs + unrealized - exit TC still to pay on open lots).
   const totals = useMemo(() => {
     const realizedNet = visible.reduce((sum, s) => sum + s.net_realized_pnl, 0);
     const unrealized = visible.reduce((sum, s) => sum + s.total_unrealized_pnl, 0);
-    return { realizedNet, unrealized, net: realizedNet + unrealized };
+    const exitCost = visible.reduce((sum, s) => sum + s.projected_exit_cost, 0);
+    return { realizedNet, unrealized, exitCost, net: visible.reduce((sum, s) => sum + s.net_pnl, 0) };
   }, [visible]);
 
   return (
@@ -245,14 +246,15 @@ export function StructureList({
             {filtersActive && (
               <div
                 style={{ display: "flex", alignItems: "baseline", gap: 8, whiteSpace: "nowrap" }}
-                title={`Realized after TC ${fmtMoney(totals.realizedNet)} + unrealized ${fmtMoney(totals.unrealized)}`}
+                title={`Realized after TC ${fmtMoney(totals.realizedNet)} + unrealized ${fmtMoney(totals.unrealized)} − exit TC ${fmtMoney(totals.exitCost)}`}
               >
                 <span className="stat-label" style={{ margin: 0 }}>
                   Net P&amp;L
                   <InfoTip>
                     Total for the {visible.length} trade{visible.length === 1 ? "" : "s"} shown: realized P&amp;L after transaction
-                    costs ({fmtMoney(totals.realizedNet)}) plus unrealized P&amp;L ({fmtMoney(totals.unrealized)}). It adds up each
-                    trade's whole result, not only the part earned inside the chosen period.
+                    costs ({fmtMoney(totals.realizedNet)}) plus unrealized P&amp;L ({fmtMoney(totals.unrealized)}) minus the exit cost still
+                    to pay on open lots ({fmtMoney(totals.exitCost)}). It adds up each trade's whole result, not only the part
+                    earned inside the chosen period.
                   </InfoTip>
                 </span>
                 <strong className={pnlClass(totals.net)}>{fmtMoney(totals.net)}</strong>
@@ -329,7 +331,10 @@ export function StructureList({
               </th>
               <th>
                 Net P&amp;L
-                <InfoTip>Net Realized plus Unrealized (Gross).</InfoTip>
+                <InfoTip>
+                  Net Realized plus Unrealized (Gross), minus the transaction cost still to pay to exit the open lots — what the
+                  trade would give you if you exited now.
+                </InfoTip>
               </th>
               <th>
                 Active Risk
@@ -381,9 +386,7 @@ export function StructureList({
                 </td>
                 <td className={pnlClass(s.net_realized_pnl)}>{fmtMoney(s.net_realized_pnl)}</td>
                 <td className={pnlClass(s.total_unrealized_pnl)}>{fmtMoney(s.total_unrealized_pnl)}</td>
-                <td className={pnlClass(s.net_realized_pnl + s.total_unrealized_pnl)}>
-                  {fmtMoney(s.net_realized_pnl + s.total_unrealized_pnl)}
-                </td>
+                <td className={pnlClass(s.net_pnl)}>{fmtMoney(s.net_pnl)}</td>
                 <td>{fmtMoney(s.active_risk)}</td>
                 <td>{livePrice(s) !== undefined ? fmtPrice(livePrice(s)) : "—"}</td>
                 <td onClick={(e) => e.stopPropagation()}>

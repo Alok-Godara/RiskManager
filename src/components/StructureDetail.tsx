@@ -171,8 +171,9 @@ export function StructureDetail({
   const stopLots = stopEntries.reduce((sum, e) => sum + e.open_quantity, 0);
   const structureAvgStop = stopLots > 0 ? stopEntries.reduce((sum, e) => sum + e.open_quantity * (e.stop_loss_price as number), 0) / stopLots : undefined;
 
-  // Net P&L: realized AFTER transaction costs + unrealized (which has no TC of its own yet).
-  const netPnl = snapshot.net_realized_pnl + snapshot.total_unrealized_pnl;
+  // Net P&L: what the trade is worth if everything were exited right now — realized after
+  // the costs paid so far, plus unrealized, minus the exit-side cost still to pay on open lots.
+  const netPnl = snapshot.net_pnl;
 
   function handleChanged() {
     onChanged();
@@ -344,10 +345,18 @@ export function StructureDetail({
         <div className="stat-card">
           <div className="stat-label">
             Net P&amp;L{" "}
-            <InfoTip>Net Realized P&amp;L (realized gross minus all transaction costs) plus the gross Unrealized P&amp;L of the open lots.</InfoTip>
+            <InfoTip>
+              What you would end up with if you exited everything at the current prices: Net Realized P&amp;L, plus the gross
+              Unrealized P&amp;L of the open lots, minus the transaction cost still to pay to exit those lots (the exit side — the
+              entry side is already inside Net Realized). So the number already has both sides of the cost taken off.
+            </InfoTip>
           </div>
           <div className={`stat-value ${pnlClass(netPnl)}`}>{fmtMoney(netPnl)}</div>
-          <div className="stat-sub">Net realized + unrealized</div>
+          <div className="stat-sub">
+            {snapshot.projected_exit_cost > 0
+              ? `After ${fmtMoney(snapshot.projected_exit_cost)} exit TC on open lots`
+              : "Net realized + unrealized"}
+          </div>
         </div>
         <div className="stat-card">
           <div className="stat-label">

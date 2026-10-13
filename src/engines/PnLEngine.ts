@@ -73,6 +73,7 @@ export class PnLEngine {
       const legInstrument = tcContext?.instrumentsById.get(contract.instrument_id) ?? (await repository.getInstrument(contract.instrument_id));
       const templatesById = tcContext?.templatesById ?? new Map((await repository.getStructureTemplates()).map((t) => [t.id, t]));
       const transactionCost = TransactionCostEngine.legCost(legExecutions, contract, legInstrument, templatesById);
+      const projectedExitCost = TransactionCostEngine.projectedExitCost(Math.abs(position.net_quantity), contract, legInstrument, templatesById);
       structureExecutions.push(...legExecutions);
       for (const e of legExecutions) {
         if (e.execution_type === "Entry" && (e.status ?? "Active") === "Active") entryTimestamps.push(e.timestamp);
@@ -90,6 +91,7 @@ export class PnLEngine {
         unrealized_pnl: unrealized,
         market_value: this.marketValue(position, marketPrice?.price),
         transaction_cost: transactionCost,
+        projected_exit_cost: projectedExitCost,
       });
     }
 
@@ -103,6 +105,7 @@ export class PnLEngine {
       instrument ? instrument.tick_value / instrument.tick_size : 0
     );
     const totalTransactionCost = legSnapshots.reduce((s, l) => s + l.transaction_cost, 0);
+    const projectedExitCost = legSnapshots.reduce((s, l) => s + l.projected_exit_cost, 0);
 
     const remainingRiskCapacity = structure.current_dollar_risk + totalPnl;
 
@@ -115,6 +118,8 @@ export class PnLEngine {
       remaining_risk_capacity: remainingRiskCapacity,
       total_transaction_cost: totalTransactionCost,
       net_realized_pnl: totalRealized - totalTransactionCost,
+      projected_exit_cost: projectedExitCost,
+      net_pnl: totalRealized - totalTransactionCost + totalUnrealized - projectedExitCost,
       entry_timestamps: entryTimestamps,
       active_risk: entryStats.activeRisk,
       open_entry_count: entryStats.openEntries,
