@@ -146,6 +146,12 @@ function latestEntryTime(s: StructureSnapshot): number {
   return Math.max(...activityDates(s).map((d) => new Date(d).getTime()));
 }
 
+/** List order: 0 = open position (long/short), 1 = flat, 2 = closed. */
+function groupRank(s: StructureSnapshot): number {
+  if (s.structure.status === "Fully Closed") return 2;
+  return tradeDirection(s) === "flat" ? 1 : 0;
+}
+
 export function StructureList({
   snapshots,
   onSelect,
@@ -211,8 +217,9 @@ export function StructureList({
         if (needle && !`${s.structure.name} ${s.structure.structure_type}`.toLowerCase().includes(needle)) return false;
         return matchesPeriod(s, filters.period, now);
       })
-      // Newest entry first — whatever you traded or added to most recently is at the top.
-      .sort((a, b) => latestEntryTime(b) - latestEntryTime(a));
+      // Trades with open positions first, then flat ones, then closed ones; within
+      // each group the newest entry first.
+      .sort((a, b) => groupRank(a) - groupRank(b) || latestEntryTime(b) - latestEntryTime(a));
   }, [snapshots, filters]);
 
   const filtersActive =
