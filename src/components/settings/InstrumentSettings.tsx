@@ -112,10 +112,31 @@ export function InstrumentSettings({
     }
   }
 
+  /** What is wrong with the form, in plain words — or "" when it can be saved. Never fails silently. */
+  function validateForm(exceptId?: string): string {
+    if (!form.name.trim()) return "Enter an Instrument Name (the label shown in the app, e.g. \"WTI-Brent Spread\").";
+    if (!form.symbol.trim()) return "Enter a Symbol / Code (e.g. CLBZ).";
+    const symbol = form.symbol.trim().toUpperCase();
+    if (instruments.some((i) => i.id !== exceptId && i.symbol.trim().toUpperCase() === symbol)) {
+      return `An instrument with symbol ${symbol} already exists — use a different symbol, or edit the existing one.`;
+    }
+    if (!(form.tick_size > 0)) return "Tick Size must be greater than 0.";
+    if (!(form.tick_value > 0)) return "Tick Value must be greater than 0.";
+    if (!(form.lot_size > 0)) return "Lot Size must be greater than 0.";
+    if (!form.currency.trim()) return "Enter a Currency (e.g. USD).";
+    return "";
+  }
+
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.name || !form.symbol) return;
+    const problem = validateForm();
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    setError("");
     setSaving(true);
+    let instrumentSaved: Instrument | undefined;
     try {
       const instrument: Instrument = {
         id: uuid(),
@@ -133,8 +154,11 @@ export function InstrumentSettings({
         created_at: new Date().toISOString(),
       };
       await repository.upsertInstrument(instrument);
+      instrumentSaved = instrument;
+      // All of the months in one request: either the instrument ends up with its
+      // contracts, or (below) it is taken back out — never a half-added instrument.
       const contracts = buildRollingContracts(instrument);
-      for (const c of contracts) await repository.upsertContract(c);
+      await repository.upsertContracts(contracts);
       await logAudit({
         event_type: "InstrumentCreated",
         description: `Instrument "${instrument.name}" (${instrument.symbol}) added with ${contracts.length} contract(s)`,
@@ -142,6 +166,13 @@ export function InstrumentSettings({
       closeModals();
       onChanged();
     } catch (err) {
+      if (instrumentSaved) {
+        try {
+          await repository.deleteInstrument(instrumentSaved.id);
+        } catch {
+          // best effort — the original error below is what matters
+        }
+      }
       setError(describeSaveError(err));
     } finally {
       setSaving(false);
@@ -151,6 +182,12 @@ export function InstrumentSettings({
   async function handleEditSave(e: React.FormEvent) {
     e.preventDefault();
     if (!editing) return;
+    const problem = validateForm(editing.id);
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    setError("");
     setSaving(true);
     try {
       const updated: Instrument = {

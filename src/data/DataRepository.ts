@@ -40,6 +40,8 @@ export interface DataRepository {
   getContractsByInstrument(instrumentId: UUID): Promise<Contract[]>;
   getContract(id: UUID): Promise<Contract | undefined>;
   upsertContract(contract: Contract): Promise<void>;
+  /** Saves many contracts in one request/transaction — all of them or none. */
+  upsertContracts(contracts: Contract[]): Promise<void>;
 
   // Structure Templates
   getStructureTemplates(): Promise<StructureTemplate[]>;

@@ -112,6 +112,12 @@ export class SupabaseRepository implements DataRepository {
     if (error) throw error;
   }
 
+  async upsertContracts(contracts: Contract[]) {
+    if (contracts.length === 0) return;
+    const { error } = await this.db().from("contracts").upsert(contracts, { onConflict: "id" });
+    if (error) throw error;
+  }
+
   // Structure Templates
   async getStructureTemplates() {
     const { data, error } = await this.db().from("structure_templates").select("*");

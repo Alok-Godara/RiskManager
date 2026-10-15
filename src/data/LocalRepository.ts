@@ -61,6 +61,10 @@ export class LocalRepository implements DataRepository {
     return putOne("contracts", contract);
   }
 
+  async upsertContracts(contracts: Contract[]) {
+    for (const c of contracts) await putOne("contracts", c);
+  }
+
   // Structure Templates
   async getStructureTemplates() {
     return getAll<StructureTemplate>("structure_templates");
