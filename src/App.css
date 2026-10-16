@@ -563,6 +563,18 @@ button.secondary:hover { background: var(--panel-hover); border-color: rgba(255,
 
 button.danger { background: var(--red-dim); color: var(--red); }
 button.danger:hover { background: var(--red); color: #fff; }
+button.success { background: var(--green-dim); color: var(--green); }
+button.success:hover { background: var(--green); color: #0b1017; }
+
+/* Dashboard "Execution Error" card (components/ExecutionErrorCard.tsx) */
+.execution-error-card { max-width: 520px; }
+.execution-error-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.execution-error-form input[type="number"] { width: 120px; }
+.execution-error-form input[type="text"] { flex: 1 1 140px; min-width: 0; }
+.execution-error-history { margin-top: 10px; font-size: 0.78rem; color: var(--text-dim); }
+.execution-error-history summary { cursor: pointer; }
+.link-button { background: transparent; color: var(--text-dim); padding: 2px 6px; font-weight: 500; }
+.link-button:hover { background: var(--red-dim); color: var(--red); }
 
 .back-button { display: inline-flex; align-items: center; gap: 6px; }
 

@@ -14,6 +14,7 @@ import type {
   ApiConfig,
   SettlementPrice,
   AppSettings,
+  ExecutionError,
   UUID,
 } from "../types/domain";
 
@@ -123,6 +124,11 @@ export interface DataRepository {
   // App Settings (single row, id "default")
   getAppSettings(): Promise<AppSettings | undefined>;
   upsertAppSettings(settings: AppSettings): Promise<void>;
+
+  // Execution errors (Dashboard tracker) — newest first.
+  getExecutionErrors(): Promise<ExecutionError[]>;
+  addExecutionError(entry: ExecutionError): Promise<void>;
+  deleteExecutionError(id: UUID): Promise<void>;
 
   // Bulk utility (for seeding / import-export / future migration)
   exportAll(): Promise<Record<string, unknown>>;

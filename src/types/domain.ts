@@ -338,6 +338,19 @@ export interface AppSettings {
 }
 
 // ---------------------------------------------------------------------------
+// Execution Error: one dollar adjustment in the Dashboard's "Execution Error"
+// tracker — negative = money lost to an execution mistake, positive = money
+// gained by one. The card shows the running total. Purely a tracking number:
+// it is not part of any trade's or the portfolio's P&L.
+// ---------------------------------------------------------------------------
+export interface ExecutionError {
+  id: UUID;
+  amount: number;
+  note?: string;
+  created_at: string; // ISO timestamp
+}
+
+// ---------------------------------------------------------------------------
 // Computed / view-model types (not persisted, produced by engines)
 // ---------------------------------------------------------------------------
 export interface LegSnapshot {

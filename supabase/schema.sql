@@ -325,3 +325,19 @@ begin
     );
   end loop;
 end $$;
+
+-- ---------------------------------------------------------------------------
+-- execution_errors — ledger behind the Dashboard "Execution Error" card:
+-- one row per adjustment in dollars (negative = lost, positive = gained).
+-- Also in migrations/010_execution_errors.sql for existing databases.
+-- ---------------------------------------------------------------------------
+create table if not exists execution_errors (
+  id uuid primary key,
+  amount double precision not null,
+  note text,
+  created_at timestamptz not null default now()
+);
+create index if not exists execution_errors_created_at_idx on execution_errors(created_at desc);
+alter table execution_errors enable row level security;
+drop policy if exists "allow all (anon)" on execution_errors;
+create policy "allow all (anon)" on execution_errors for all using (true) with check (true);

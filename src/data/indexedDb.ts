@@ -3,7 +3,7 @@
 // mechanics stay isolated from the DataRepository contract.
 
 const DB_NAME = "risk_manager_db";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 export const STORES = [
   "instruments",
@@ -21,6 +21,7 @@ export const STORES = [
   "api_configs",
   "settlement_prices",
   "app_settings",
+  "execution_errors",
 ] as const;
 
 export type StoreName = (typeof STORES)[number];

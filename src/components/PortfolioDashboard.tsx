@@ -3,6 +3,7 @@ import { usePortfolioCorrelation } from "../hooks/usePortfolioCorrelation";
 import { fmtMoney, pnlClass } from "../utils/format";
 import { fmtQh } from "../utils/correlationFormat";
 import { InfoTip } from "./InfoTip";
+import { ExecutionErrorCard } from "./ExecutionErrorCard";
 
 /** The correlation window the Dashboard's diversified/concentrated read is taken from. */
 const STATUS_WINDOW = 60;
@@ -233,6 +234,10 @@ export function PortfolioDashboard({
           </div>
         </div>
         <DiversificationCard snapshots={snapshots} contracts={contracts} templates={templates} instruments={instruments} />
+      </div>
+
+      <div className="card-grid">
+        <ExecutionErrorCard />
       </div>
 
       <AlertsSection snapshots={snapshots} onOpenTrade={onOpenTrade} />

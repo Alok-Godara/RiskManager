@@ -16,6 +16,7 @@ import type {
   ApiConfig,
   SettlementPrice,
   AppSettings,
+  ExecutionError,
   UUID,
 } from "../types/domain";
 
@@ -237,6 +238,18 @@ export class LocalRepository implements DataRepository {
   }
   async upsertAppSettings(settings: AppSettings) {
     return putOne("app_settings", settings, "default");
+  }
+
+  // Execution errors
+  async getExecutionErrors() {
+    const all = await getAll<ExecutionError>("execution_errors");
+    return all.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+  async addExecutionError(entry: ExecutionError) {
+    return putOne("execution_errors", entry);
+  }
+  async deleteExecutionError(id: UUID) {
+    return deleteOne("execution_errors", id);
   }
 
   // Bulk

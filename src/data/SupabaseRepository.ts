@@ -16,6 +16,7 @@ import type {
   ApiConfig,
   SettlementPrice,
   AppSettings,
+  ExecutionError,
   UUID,
 } from "../types/domain";
 
@@ -339,6 +340,21 @@ export class SupabaseRepository implements DataRepository {
   }
   async upsertAppSettings(settings: AppSettings) {
     const { error } = await this.db().from("app_settings").upsert(settings, { onConflict: "id" });
+    if (error) throw error;
+  }
+
+  // Execution errors
+  async getExecutionErrors() {
+    const { data, error } = await this.db().from("execution_errors").select("*").order("created_at", { ascending: false });
+    if (error) throw error;
+    return (data ?? []) as ExecutionError[];
+  }
+  async addExecutionError(entry: ExecutionError) {
+    const { error } = await this.db().from("execution_errors").insert(entry);
+    if (error) throw error;
+  }
+  async deleteExecutionError(id: UUID) {
+    const { error } = await this.db().from("execution_errors").delete().eq("id", id);
     if (error) throw error;
   }
 
