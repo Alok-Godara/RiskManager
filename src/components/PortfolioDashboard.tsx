@@ -4,6 +4,7 @@ import { fmtMoney, pnlClass } from "../utils/format";
 import { fmtQh } from "../utils/correlationFormat";
 import { InfoTip } from "./InfoTip";
 import { ExecutionErrorCard } from "./ExecutionErrorCard";
+import { PerformanceSection } from "./PerformanceSection";
 
 /** The correlation window the Dashboard's diversified/concentrated read is taken from. */
 const STATUS_WINDOW = 60;
@@ -235,6 +236,8 @@ export function PortfolioDashboard({
         </div>
         <DiversificationCard snapshots={snapshots} contracts={contracts} templates={templates} instruments={instruments} />
       </div>
+
+      <PerformanceSection snapshots={snapshots} />
 
       <div className="card-grid">
         <ExecutionErrorCard />
