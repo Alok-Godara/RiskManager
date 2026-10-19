@@ -13,6 +13,40 @@ import { EditEntryModal } from "./EditEntryModal";
 import { EditExecutionModal } from "./EditExecutionModal";
 import { useStructureValueAtRisk } from "../hooks/useStructureValueAtRisk";
 
+/** The Entries-table columns you can sort by (the heading you click). */
+type EntrySortKey =
+  | "timestamp"
+  | "side"
+  | "avg_price"
+  | "open_quantity"
+  | "closed_quantity"
+  | "avg_exit_price"
+  | "risk_allocated"
+  | "stop_loss_price"
+  | "unrealized_pnl"
+  | "realized_pnl";
+
+function entrySortValue(en: EntrySnapshot, key: EntrySortKey): number | string | undefined {
+  if (key === "timestamp") return new Date(en.timestamp).getTime();
+  if (key === "side") return en.side;
+  if (key === "risk_allocated") return en.risk_allocated ? en.risk_allocated : undefined; // shown as "—" when 0
+  return en[key];
+}
+
+/** Sorts a copy. Entries with no value for the column ("—") always go last, in either direction. */
+function sortEntries(entries: EntrySnapshot[], key: EntrySortKey, dir: "asc" | "desc"): EntrySnapshot[] {
+  const sign = dir === "asc" ? 1 : -1;
+  return [...entries].sort((a, b) => {
+    const va = entrySortValue(a, key);
+    const vb = entrySortValue(b, key);
+    if (va === undefined && vb === undefined) return 0;
+    if (va === undefined) return 1;
+    if (vb === undefined) return -1;
+    const cmp = typeof va === "string" || typeof vb === "string" ? String(va).localeCompare(String(vb)) : (va as number) - (vb as number);
+    return cmp * sign || new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(); // ties: newest first
+  });
+}
+
 export function StructureDetail({
   snapshot,
   snapshots,
@@ -33,6 +67,24 @@ export function StructureDetail({
   const { structure, legs } = snapshot;
 
   const [entries, setEntries] = useState<EntrySnapshot[]>([]);
+  // Entries table order — newest first until you click a column heading.
+  const [entrySort, setEntrySort] = useState<{ key: EntrySortKey; dir: "asc" | "desc" }>({ key: "timestamp", dir: "desc" });
+  const sortedEntries = useMemo(() => sortEntries(entries, entrySort.key, entrySort.dir), [entries, entrySort]);
+  function sortEntriesBy(key: EntrySortKey) {
+    setEntrySort((prev) => ({ key, dir: prev.key === key && prev.dir === "asc" ? "desc" : "asc" }));
+  }
+  /** A clickable column heading: click to sort by it, click again to flip ascending/descending. */
+  function sortHeader(key: EntrySortKey, label: string) {
+    const active = entrySort.key === key;
+    return (
+      <th aria-sort={active ? (entrySort.dir === "asc" ? "ascending" : "descending") : "none"}>
+        <button type="button" className="sort-header" onClick={() => sortEntriesBy(key)} title={`Sort by ${label}`}>
+          {label}
+          <span className="sort-arrow" aria-hidden="true">{active ? (entrySort.dir === "asc" ? "▲" : "▼") : "↕"}</span>
+        </button>
+      </th>
+    );
+  }
   const [otherExecutions, setOtherExecutions] = useState<Execution[]>([]);
   const [showAddEntry, setShowAddEntry] = useState(false);
   const [exitingEntry, setExitingEntry] = useState<EntrySnapshot | null>(null);
@@ -554,21 +606,21 @@ export function StructureDetail({
       <table className="data-table">
         <thead>
           <tr>
-            <th>Date &amp; Time</th>
-            <th>Side</th>
-            <th>Avg Entry Price</th>
-            <th>Open Qty</th>
-            <th>Closed Qty</th>
-            <th>Avg Exit Price</th>
-            <th>Risk Allocated</th>
-            <th>Stop Loss (Price)</th>
-            <th>Unrealized P&amp;L</th>
-            <th>Realized P&amp;L</th>
+            {sortHeader("timestamp", "Date & Time")}
+            {sortHeader("side", "Side")}
+            {sortHeader("avg_price", "Avg Entry Price")}
+            {sortHeader("open_quantity", "Open Qty")}
+            {sortHeader("closed_quantity", "Closed Qty")}
+            {sortHeader("avg_exit_price", "Avg Exit Price")}
+            {sortHeader("risk_allocated", "Risk Allocated")}
+            {sortHeader("stop_loss_price", "Stop Loss (Price)")}
+            {sortHeader("unrealized_pnl", "Unrealized P&L")}
+            {sortHeader("realized_pnl", "Realized P&L")}
             <th></th>
           </tr>
         </thead>
         <tbody>
-          {entries.map((en) => (
+          {sortedEntries.map((en) => (
             <Fragment key={en.entry_group_id}>
               <tr
                 className="clickable"
