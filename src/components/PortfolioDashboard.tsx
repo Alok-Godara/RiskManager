@@ -1,5 +1,5 @@
 import type { Contract, Instrument, PortfolioSummary, StructureSnapshot, StructureTemplate } from "../types/domain";
-import { usePortfolioCorrelation } from "../hooks/usePortfolioCorrelation";
+import { usePortfolioCorrelation, type PortfolioCorrelationState } from "../hooks/usePortfolioCorrelation";
 import { fmtMoney, pnlClass } from "../utils/format";
 import { fmtQh } from "../utils/correlationFormat";
 import { InfoTip } from "./InfoTip";
@@ -18,18 +18,8 @@ const PROFIT_TARGET_MULTIPLE = 1.5;
  * correlation analysis as the Correlation tab (60-day window). When it is
  * concentrated, says why: the highly-correlated pairs and the warnings.
  */
-function DiversificationCard({
-  snapshots,
-  contracts,
-  templates,
-  instruments,
-}: {
-  snapshots: StructureSnapshot[];
-  contracts: Contract[];
-  templates: StructureTemplate[];
-  instruments: Instrument[];
-}) {
-  const { loading, error, analysesByWindow, openStructureCount, thresholds } = usePortfolioCorrelation(snapshots, contracts, templates, instruments);
+function DiversificationCard({ correlation }: { correlation: PortfolioCorrelationState }) {
+  const { loading, error, analysesByWindow, openStructureCount, thresholds } = correlation;
   const analysis = analysesByWindow?.[STATUS_WINDOW];
 
   let value = "—";
@@ -83,6 +73,46 @@ function DiversificationCard({
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/**
+ * Net Value at Risk of the whole book — the same figure as the Correlation tab:
+ * from the NET lots held in each delivery month (hedged months drop out) and the
+ * covariance of their last 90 days of settlement price changes. See
+ * CorrelationEngine.valueAtRisk.
+ */
+function ValueAtRiskCard({ correlation }: { correlation: PortfolioCorrelationState }) {
+  const { loading, error, valueAtRisk, openStructureCount } = correlation;
+
+  let value = "—";
+  let sub = "";
+  if (error) sub = "Could not load correlation data";
+  else if (openStructureCount === 0) sub = "No open trades";
+  else if (valueAtRisk) {
+    value = `±${fmtMoney(valueAtRisk.value_at_risk)}`;
+    const left = valueAtRisk.excluded_contract_ids?.length ?? 0;
+    sub = `Daily swing (1 std dev) ${fmtMoney(valueAtRisk.daily_std_dev)}${left > 0 ? ` · ${left} month${left > 1 ? "s" : ""} not included (no price history)` : ""}`;
+  } else if (loading) {
+    value = "…";
+    sub = "Calculating…";
+  } else sub = "Not enough settlement history yet";
+
+  return (
+    <div className="stat-card">
+      <div className="stat-label">
+        Net Value at Risk
+        <InfoTip align="right">
+          The most your whole portfolio is likely to lose OR make in one day
+          {valueAtRisk ? ` (${(valueAtRisk.confidence * 100).toFixed(0)}% confidence)` : ""}, taken from your NET position: lots that
+          offset each other across trades cancel out, and the correlation between delivery months (from the last{" "}
+          {valueAtRisk?.lookback_days ?? 90} trading days of settlement prices) decides how much of the rest adds up or hedges. It
+          is a typical-move number from recent history, not a worst case. Full breakdown by month on the Correlation tab.
+        </InfoTip>
+      </div>
+      <div className="stat-value">{value}</div>
+      <div className="stat-sub">{sub}</div>
     </div>
   );
 }
@@ -161,6 +191,9 @@ export function PortfolioDashboard({
   instruments: Instrument[];
   onOpenTrade?: (id: string) => void;
 }) {
+  // One correlation analysis, shared by the Portfolio and Net Value at Risk cards.
+  const correlation = usePortfolioCorrelation(snapshots, contracts, templates, instruments);
+
   if (!summary) return <div className="panel">Loading portfolio…</div>;
 
   const utilizationPct =
@@ -234,7 +267,8 @@ export function PortfolioDashboard({
             {utilizationPct.toFixed(0)}% used · {fmtMoney(summary.remaining_risk_capacity)} remaining
           </div>
         </div>
-        <DiversificationCard snapshots={snapshots} contracts={contracts} templates={templates} instruments={instruments} />
+        <DiversificationCard correlation={correlation} />
+        <ValueAtRiskCard correlation={correlation} />
       </div>
 
       <PerformanceSection snapshots={snapshots} />

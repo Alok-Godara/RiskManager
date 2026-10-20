@@ -9,6 +9,17 @@ function refdataSymbolFor(instrument: Instrument): string {
 }
 
 /**
+ * A spread product the settlement feed does not carry can be defined from two
+ * products that it does: a refdata symbol written "A-B" (e.g. "CL-BRN" for the
+ * WTI-Brent spread) means settlement = A's price minus B's price for the same
+ * delivery month. Undefined for an ordinary symbol.
+ */
+export function parseSpreadFormula(refdataSymbol: string): { minuend: string; subtrahend: string } | undefined {
+  const match = /^([A-Z0-9]+)-([A-Z0-9]+)$/.exec(refdataSymbol.trim().toUpperCase());
+  return match ? { minuend: match[1], subtrahend: match[2] } : undefined;
+}
+
+/**
  * SettlementHistoryService: keeps `settlement_prices` topped up with
  * however many trading days of history the correlation engine needs, for
  * whatever outright contracts are currently in use. Idempotent and
@@ -97,9 +108,19 @@ export class SettlementHistoryService {
 
     const missingDates = dateStrs.filter((dateStr) => outrights.some((c) => !haveKey.has(`${c.id}::${dateStr}`)));
     if (missingDates.length > 0) {
-      const allowedSymbols = new Set(
-        outrights.map((c) => instruments.get(c.instrument_id)).filter((i): i is Instrument => Boolean(i)).map(refdataSymbolFor)
-      );
+      // A spread formula ("CL-BRN") needs both of its products fetched, not itself.
+      const allowedSymbols = new Set<string>();
+      for (const instrument of outrights.map((c) => instruments.get(c.instrument_id))) {
+        if (!instrument) continue;
+        const symbol = refdataSymbolFor(instrument);
+        const formula = parseSpreadFormula(symbol);
+        if (formula) {
+          allowedSymbols.add(formula.minuend);
+          allowedSymbols.add(formula.subtrahend);
+        } else {
+          allowedSymbols.add(symbol);
+        }
+      }
 
       let settlementsByKey: Record<string, number>;
       try {
@@ -117,7 +138,16 @@ export class SettlementHistoryService {
             if (haveKey.has(`${contract.id}::${dateStr}`)) continue;
             const instrument = instruments.get(contract.instrument_id);
             if (!instrument) continue;
-            const price = settlementsByKey[settlementKey(dateStr, refdataSymbolFor(instrument), contract.month_label)];
+            const symbol = refdataSymbolFor(instrument);
+            const formula = parseSpreadFormula(symbol);
+            let price: number | undefined;
+            if (formula) {
+              const a = settlementsByKey[settlementKey(dateStr, formula.minuend, contract.month_label)];
+              const b = settlementsByKey[settlementKey(dateStr, formula.subtrahend, contract.month_label)];
+              if (a !== undefined && b !== undefined) price = a - b;
+            } else {
+              price = settlementsByKey[settlementKey(dateStr, symbol, contract.month_label)];
+            }
             if (price === undefined) continue;
 
             records.push({

@@ -10,6 +10,7 @@ import { StructureDetail } from "./components/StructureDetail";
 import { CorrelationPanel } from "./components/CorrelationPanel";
 import { AuditLog } from "./components/AuditLog";
 import { Settings } from "./components/Settings";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { isCloudConfigured } from "./data";
 import { fmtMoney, pnlClass } from "./utils/format";
 import { IconGrid, IconLayers, IconStructure, IconClock, IconCloud, IconDisk, IconSettings, IconTrend } from "./components/icons";
@@ -142,6 +143,7 @@ function App() {
         </header>
 
         <main className="app-main">
+          <ErrorBoundary key={tab}>
           {tab === "dashboard" && (
             <PortfolioDashboard
               summary={portfolio}
@@ -197,6 +199,7 @@ function App() {
           {tab === "settings" && (
             <Settings instruments={instruments} templates={templates} onChanged={reload} />
           )}
+          </ErrorBoundary>
         </main>
       </div>
     </div>

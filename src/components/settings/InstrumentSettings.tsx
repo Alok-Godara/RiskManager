@@ -243,7 +243,8 @@ export function InstrumentSettings({
         <p className="helper-text">
           The refdata settlement feed's own product symbol, from its <code>HGProductKey</code> field (e.g.{" "}
           <code>ICE:BRN</code> → <code>BRN</code>) — a different convention than the QuantHub code above. Defaults to
-          the symbol above when left blank.
+          the symbol above when left blank. For a spread the feed doesn't carry, write it as a formula —{" "}
+          <code>CL-BRN</code> means WTI price minus Brent price for the same month.
         </p>
       </div>
       <div className="leg-row">

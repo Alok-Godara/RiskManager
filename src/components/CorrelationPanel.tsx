@@ -311,6 +311,20 @@ export function CorrelationPanel({
             </div>
           </div>
 
+          {(valueAtRisk.excluded_contract_ids?.length ?? 0) > 0 && (
+            <p className="helper-text" style={{ color: "var(--amber)" }}>
+              Not included in this VaR (no settlement price history for them yet):{" "}
+              {valueAtRisk.excluded_contract_ids
+                .map(
+                  (id) =>
+                    `${instrumentSymbolById.get(contractsById.get(id)?.instrument_id ?? "") ?? "—"} ${contractsById.get(id)?.month_label ?? "—"}`
+                )
+                .join(", ")}
+              . For a spread the settlement feed doesn't carry, set its Settlement API Product Symbol in Settings → Instruments to a
+              formula such as CL-BRN.
+            </p>
+          )}
+
           <details style={{ margin: "4px 0 16px" }}>
             <summary style={{ cursor: "pointer", fontSize: "0.82rem" }}>VaR by delivery month</summary>
             <table className="data-table compact" style={{ marginTop: 8 }}>

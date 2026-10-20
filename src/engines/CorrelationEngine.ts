@@ -278,11 +278,19 @@ export class CorrelationEngine {
   }): ValueAtRiskResult | undefined {
     const lookback = input.lookbackDays ?? VAR_LOOKBACK_DAYS;
     const confidence = input.confidence ?? VAR_CONFIDENCE;
-    const held = Array.from(input.lotsByContract.entries()).filter(([, lots]) => Math.abs(lots) > 1e-9);
+    const heldAll = Array.from(input.lotsByContract.entries()).filter(([, lots]) => Math.abs(lots) > 1e-9);
+    if (heldAll.length === 0) return undefined;
+
+    const priceByKey = new Map(input.settlements.map((s) => [`${s.contract_id}::${s.date}`, s.price]));
+    // A month with no settlement history at all (a product the feed doesn't carry)
+    // cannot be measured — leave it out and say so, rather than losing the VaR of
+    // everything else along with it. Months that DO have history all count.
+    const hasHistory = (id: UUID) => input.tradingDates.some((d) => priceByKey.has(`${id}::${d}`));
+    const held = heldAll.filter(([id]) => hasHistory(id));
+    const excluded = heldAll.filter(([id]) => !hasHistory(id)).map(([id]) => id);
     if (held.length === 0) return undefined;
     const ids = held.map(([id]) => id);
 
-    const priceByKey = new Map(input.settlements.map((s) => [`${s.contract_id}::${s.date}`, s.price]));
     const dates = input.tradingDates
       .filter((d) => ids.every((id) => priceByKey.has(`${id}::${d}`)))
       .sort()
@@ -319,6 +327,7 @@ export class CorrelationEngine {
       observations: n,
       start_date: dates[0],
       end_date: dates[dates.length - 1],
+      excluded_contract_ids: excluded,
       contributions: held.map(([id, lots], i) => ({
         contract_id: id,
         net_lots: lots,

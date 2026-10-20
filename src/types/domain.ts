@@ -514,6 +514,8 @@ export interface ValueAtRiskResult {
   observations: number; // daily changes actually used (common dates across every contract held)
   start_date: string;
   end_date: string;
+  // Held months left out of the figure because they have no settlement history at all — the VaR covers everything else.
+  excluded_contract_ids: UUID[];
   contributions: {
     contract_id: UUID;
     net_lots: number;
