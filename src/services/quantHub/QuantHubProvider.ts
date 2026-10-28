@@ -14,7 +14,7 @@ import {
   type OhlcCandle,
 } from "./client";
 import { isStaleCandle, londonToday, wallDate } from "./staleness";
-import { buildCompositeQuantHubCode, quantHubProductCode, toQuantHubCode } from "./symbols";
+import { buildCompositeQuantHubCode, quantHubProductCode, quantHubStructureCode, toQuantHubCode } from "./symbols";
 
 /**
  * Reference data (instruments, templates, an instrument's full contract
@@ -146,7 +146,7 @@ export class QuantHubProvider implements MarketDataProvider {
       if (!label) return undefined;
       monthLabels.push(label);
     }
-    return buildCompositeQuantHubCode(quantHubProductCode(instrument), monthLabels);
+    return buildCompositeQuantHubCode(quantHubStructureCode(instrument), monthLabels);
   }
 
   /**

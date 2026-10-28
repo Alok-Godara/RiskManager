@@ -235,6 +235,7 @@ export class EntryEngine {
       }
 
       const closingExecutionIds = new Set(closingExecutions.map((e) => e.id));
+      const hasTransferOut = closingExecutions.some((e) => e.transfer_out);
       const realizedPnl = allRealizedEvents
         .filter((ev) => closingExecutionIds.has(ev.execution_id))
         .reduce((sum, ev) => sum + ev.realized_pnl, 0);
@@ -275,6 +276,7 @@ export class EntryEngine {
         closed_quantity: closedLots,
         avg_exit_price: avgExitPrice,
         unrealized_pnl: unrealizedPnl,
+        has_transfer_out: hasTransferOut,
         realized_pnl: realizedPnl,
         stop_loss_price: stopLossPrice,
         legs: rows.map((r) => ({

@@ -8,6 +8,7 @@ import { dedupeContractsByMonth, sortContractsChronologically } from "../utils/c
 import { contractLifecycleStatus, daysUntilExpiry } from "../utils/contractExpiry";
 import { ContractAutocomplete } from "./ContractAutocomplete";
 import { InfoTip } from "./InfoTip";
+import { quantHubProductCode, quantHubStructureCode } from "../services/quantHub/symbols";
 
 const CUSTOM_TEMPLATE_ID = "__custom__";
 
@@ -23,6 +24,12 @@ interface CustomLegRow {
 const blankLeg = (): CustomLegRow => ({ base_template_id: "", contract_id: "", ratio: 1 });
 
 const EPS = 1e-6;
+
+/** A plain two-month calendar spread (+1 / -1) — what quoted spread boxes are traded as. */
+function isCalendarSpread(template: StructureTemplate): boolean {
+  const legs = [...template.legs].sort((a, b) => a.month_offset - b.month_offset);
+  return legs.length === 2 && legs[0].ratio === 1 && legs[1].ratio === -1 && legs[1].month_offset - legs[0].month_offset === 1;
+}
 
 function isTrivialOutright(template: StructureTemplate): boolean {
   return template.legs.length === 1 && template.legs[0].ratio === 1 && template.legs[0].month_offset === 0;
@@ -81,6 +88,14 @@ export function NewStructureForm({
   const isCustom = templateId === CUSTOM_TEMPLATE_ID || !selectedTemplate;
   const selectedBaseTemplate = templates.find((t) => t.id === baseTemplateId);
 
+  // Instruments like CLBZ have their own quoted-spread product (CLBZZX...) and the exchange lists
+  // nothing wider than a calendar spread ("box") for them: flies / D-flies are built from boxes.
+  const selectedInstrument = instruments.find((i) => i.id === instrumentId);
+  const quotedOnlyAsSpreads = selectedInstrument
+    ? quantHubStructureCode(selectedInstrument) !== quantHubProductCode(selectedInstrument)
+    : false;
+  const baseNotQuoted = quotedOnlyAsSpreads && selectedBaseTemplate !== undefined && selectedBaseTemplate.legs.length > 2;
+
   // Custom path: every leg is "N units of <base structure> anchored at <month>"
   // (a plain Outright by default), so a custom structure can be assembled from
   // Flies / Spreads / etc. — same base-leg idea as the template path above.
@@ -100,7 +115,10 @@ export function NewStructureForm({
     setAnchorContractId("");
     // Default the base structure to a plain Outright if one exists, else the first available template.
     const outright = templates.find(isTrivialOutright);
-    setBaseTemplateId(outright?.id ?? templates[0]?.id ?? "");
+    const instrument = instruments.find((i) => i.id === instrumentId);
+    const spreadBox =
+      instrument && quantHubStructureCode(instrument) !== quantHubProductCode(instrument) ? templates.find(isCalendarSpread) : undefined;
+    setBaseTemplateId(spreadBox?.id ?? outright?.id ?? templates[0]?.id ?? "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templateId, instrumentId]);
 
@@ -323,6 +341,13 @@ export function NewStructureForm({
               e.g. build a Double Fly from Outrights, from Spreads, or from Flies — the engine works out the
               required legs either way.
             </p>
+            {quotedOnlyAsSpreads && (
+              <p className="helper-text" style={baseNotQuoted ? { color: "var(--red)" } : undefined}>
+                {baseNotQuoted
+                  ? `The exchange does not quote a ${selectedBaseTemplate?.name} for ${selectedInstrument?.symbol}, so it would have no live price. Pick Calendar Spread as the Base Structure.`
+                  : `${selectedInstrument?.symbol} is quoted by the exchange as outrights and calendar spreads (spread boxes). Pick Calendar Spread to trade the quoted box; a Fly or Double Fly is then built from boxes.`}
+              </p>
+            )}
           </div>
         )}
 

@@ -39,6 +39,36 @@ export function monthLabelAtOffset(anchorLabel: string, offset: number): string 
 }
 
 /**
+ * How many delivery months ahead of the front month an instrument's contract list
+ * reaches — as far out as the price feeds actually carry the product (checked
+ * Oct 2026: the settlement feed lists Brent / WTI to Dec 2032, Gasoil to Dec 2030,
+ * WBS and BZ to Dec 2029; QuantHub goes at least as far). Looked up by symbol, then
+ * by exchange code; anything unknown gets a moderate default. A month the feed has
+ * no price for yet is handled gracefully (no history), so erring long is harmless.
+ */
+const HORIZON_MONTHS_BY_KEY: Record<string, number> = {
+  BRN: 72,
+  CO: 72,
+  CL: 72,
+  CLBZ: 72, // WTI-Brent spread: limited by the shorter of its two legs
+  WTCLCO: 72,
+  G: 48,
+  GO: 48,
+  WBS: 36,
+  HCL: 36,
+  BZ: 36,
+};
+const DEFAULT_HORIZON_MONTHS = 36;
+
+export function contractHorizonMonths(instrument: Instrument): number {
+  return (
+    HORIZON_MONTHS_BY_KEY[instrument.symbol.trim().toUpperCase()] ??
+    (instrument.exchange_code ? HORIZON_MONTHS_BY_KEY[instrument.exchange_code.trim().toUpperCase()] : undefined) ??
+    DEFAULT_HORIZON_MONTHS
+  );
+}
+
+/**
  * Build a rolling run of monthly contracts, starting at the instrument's
  * actual tradeable FRONT month (see utils/contractExpiry.ts) — not simply
  * `from`'s own calendar month. Brent's front month, for example, runs
@@ -46,7 +76,7 @@ export function monthLabelAtOffset(anchorLabel: string, offset: number): string 
  * before its delivery month; generating from "today" would create months
  * that are already expired by real exchange rules.
  */
-export function buildRollingContracts(instrument: Instrument, monthCount = 24, from: Date = new Date()): Contract[] {
+export function buildRollingContracts(instrument: Instrument, monthCount = contractHorizonMonths(instrument), from: Date = new Date()): Contract[] {
   const now = new Date().toISOString();
   const start = frontMonth(instrument, from);
   const out: Contract[] = [];

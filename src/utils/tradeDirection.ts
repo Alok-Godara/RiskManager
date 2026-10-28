@@ -2,6 +2,15 @@ import type { StructureSnapshot } from "../types/domain";
 
 const EPS = 1e-9;
 
+/**
+ * A trade that currently HOLDS lots: not closed, and at least one leg with a non-zero
+ * net position. Correlation, hedging and VaR are about positions, so a trade that is
+ * open but flat (everything exited, not yet closed) has nothing to say there.
+ */
+export function holdsPosition(s: StructureSnapshot): boolean {
+  return s.structure.status !== "Fully Closed" && s.legs.some((l) => Math.abs(l.position.net_quantity) > EPS);
+}
+
 export type TradeDirection = "long" | "short" | "flat";
 
 /**

@@ -5,8 +5,9 @@ import { StructureEngine } from "../engines/StructureEngine";
 import { tickSizeForStructure } from "../utils/instrumentLookup";
 import { Modal } from "./Modal";
 import { fmtPrice } from "../utils/format";
+import { structurePrice } from "../utils/structurePrice";
 import { describeDbError } from "../utils/dbError";
-import { NoTcCheckbox } from "./NoTcCheckbox";
+import { TransferOutCheckbox } from "./TransferOutCheckbox";
 
 /**
  * Exits some/all of ONE SPECIFIC ENTRY, never any other entry on the same
@@ -45,7 +46,7 @@ export function ExitEntryModal({
   const [exitPrices, setExitPrices] = useState<Record<string, number>>(
     Object.fromEntries(rows.map((r) => [r.leg.id, r.currentPrice ?? r.execution.price]))
   );
-  const [noTc, setNoTc] = useState(false);
+  const [transferOut, setTransferOut] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [tickSize, setTickSize] = useState(0.01);
@@ -71,7 +72,7 @@ export function ExitEntryModal({
           price,
           closes_entry_group_id: entry.entry_group_id,
           entry_group_id: exitGroupId,
-          tc_waived: noTc,
+          transfer_out: transferOut,
         });
       }
       onSaved();
@@ -142,22 +143,37 @@ export function ExitEntryModal({
               </tr>
             ))}
           </tbody>
+          <tfoot>
+            <tr>
+              <td colSpan={3}>
+                <strong>Structure</strong> <span className="muted">(Σ ratio × leg price)</span>
+              </td>
+              <td className="muted">
+                <strong>{fmtPrice(structurePrice(legSnapshots, (l) => l.current_price))}</strong>
+              </td>
+              <td>
+                <strong>
+                  {fmtPrice(
+                    legSnapshots.every((l) => rows.some((r) => r.leg.id === l.leg.id))
+                      ? structurePrice(legSnapshots, (l) => exitPrices[l.leg.id])
+                      : undefined
+                  )}
+                </strong>
+              </td>
+            </tr>
+          </tfoot>
         </table>
         <p className="helper-text">
           Only this entry's own open lots are affected — other entries stay untouched. Lots default to what is still open;
           reduce for a partial exit.
         </p>
 
-        <NoTcCheckbox
-          checked={noTc}
-          onChange={setNoTc}
-          help="Tick this when nothing is really being traded — e.g. you are moving this position into another trade — so no exit transaction cost is charged on this exit."
-        />
+        <TransferOutCheckbox checked={transferOut} onChange={setTransferOut} />
 
         {error && <p className="helper-text" style={{ color: "var(--red)" }}>{error}</p>}
 
         <button type="submit" disabled={saving}>
-          {saving ? "Saving…" : noTc ? "Confirm Exit (no TC)" : "Confirm Exit"}
+          {saving ? "Saving…" : transferOut ? "Confirm Transfer Out (no TC, no P&L)" : "Confirm Exit"}
         </button>
       </form>
     </Modal>

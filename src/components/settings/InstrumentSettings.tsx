@@ -11,6 +11,9 @@ import { DEFAULT_TC_PER_OUTRIGHT_RT, TransactionCostEngine } from "../../engines
 function describeSaveError(err: unknown): string {
   const message =
     err instanceof Error ? err.message : typeof err === "object" && err !== null && "message" in err ? String((err as { message: unknown }).message) : "Failed to save";
+  if (message.includes("structure_exchange_code")) {
+    return "The database doesn't have the quoted-spread code column yet. Run supabase/migrations/013_instrument_structure_code.sql in the Supabase SQL editor, then save again.";
+  }
   if (message.includes("tc_per_outright_rt")) {
     return "The database doesn't have the transaction-cost column yet. Run supabase/migrations/007_instrument_tc.sql in the Supabase SQL editor, then save again.";
   }
@@ -22,6 +25,7 @@ interface FormState {
   symbol: string;
   exchange_code: string;
   refdata_symbol: string;
+  structure_exchange_code: string;
   tc_per_outright_rt: number | "";
   tick_size: number;
   tick_value: number;
@@ -37,6 +41,7 @@ function blankForm(): FormState {
     symbol: "",
     exchange_code: "",
     refdata_symbol: "",
+    structure_exchange_code: "",
     tc_per_outright_rt: "",
     tick_size: 0.01,
     tick_value: 10,
@@ -74,6 +79,7 @@ export function InstrumentSettings({
       symbol: inst.symbol,
       exchange_code: inst.exchange_code ?? "",
       refdata_symbol: inst.refdata_symbol ?? "",
+      structure_exchange_code: inst.structure_exchange_code ?? "",
       tc_per_outright_rt: inst.tc_per_outright_rt ?? "",
       tick_size: inst.tick_size,
       tick_value: inst.tick_value,
@@ -144,6 +150,7 @@ export function InstrumentSettings({
         symbol: form.symbol.toUpperCase(),
         exchange_code: form.exchange_code || undefined,
         refdata_symbol: form.refdata_symbol || undefined,
+        structure_exchange_code: form.structure_exchange_code || undefined,
         tc_per_outright_rt: form.tc_per_outright_rt === "" ? undefined : form.tc_per_outright_rt,
         tick_size: form.tick_size,
         tick_value: form.tick_value,
@@ -196,6 +203,7 @@ export function InstrumentSettings({
         symbol: form.symbol.toUpperCase(),
         exchange_code: form.exchange_code || undefined,
         refdata_symbol: form.refdata_symbol || undefined,
+        structure_exchange_code: form.structure_exchange_code || undefined,
         tc_per_outright_rt: form.tc_per_outright_rt === "" ? undefined : form.tc_per_outright_rt,
         tick_size: form.tick_size,
         tick_value: form.tick_value,
@@ -231,6 +239,19 @@ export function InstrumentSettings({
         <p className="helper-text">
           The product code live prices are requested under — combined with the futures month code, e.g.{" "}
           <code>CO</code> + Nov 2026 → <code>COX26</code>. Defaults to the symbol above when left blank.
+        </p>
+      </div>
+      <div className="form-row">
+        <label>Quoted Spread / Fly Code (optional)</label>
+        <input
+          value={form.structure_exchange_code}
+          onChange={(e) => setForm({ ...form, structure_exchange_code: e.target.value })}
+          placeholder="e.g. CLBZZX for the CLBZ spread box"
+        />
+        <p className="helper-text">
+          Only if the exchange lists this instrument's quoted spreads under a different product than its outrights — then live
+          prices for its Spread / Fly quotes are requested as <code>CLBZZX</code> + <code>Q27-U27</code> instead of the outright
+          code. Leave blank otherwise (CLBZ is already known).
         </p>
       </div>
       <div className="form-row">
@@ -308,8 +329,8 @@ export function InstrumentSettings({
         <button onClick={openAdd}>+ Add Instrument</button>
       </div>
       <p className="helper-text">
-        Only active instruments appear when creating a new structure. Adding an instrument generates its next 24
-        months of contracts starting at its real tradeable front month (see utils/contractExpiry.ts — each product's
+        Only active instruments appear when creating a new structure. Adding an instrument generates its contracts
+        for as many months ahead as its price feeds carry (about 3 to 6 years) starting at its real tradeable front month (see utils/contractExpiry.ts — each product's
         actual exchange last-trading-day rule, not just "this calendar month"), and that window keeps rolling
         forward on its own. A month past its own last trading day is excluded from new entries automatically and
         shown as Expired on any structure still holding it.

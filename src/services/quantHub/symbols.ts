@@ -17,6 +17,28 @@ export function quantHubProductCode(instrument: Instrument): string {
   return (instrument.exchange_code?.trim() || instrument.symbol).trim().toUpperCase();
 }
 
+/**
+ * Products whose quoted Spread / Fly structures are listed under a different
+ * product code than their outrights. CLBZ (WTI-Brent): outrights are "WTCLCO<month>",
+ * but the CME-quoted calendar spread ("spread box") is "CLBZZX<m1>-<m2>" — e.g.
+ * CLBZZXQ27-U27. Used when the instrument has no structure code of its own.
+ */
+const DEFAULT_STRUCTURE_PRODUCT_CODE: Record<string, string> = {
+  WTCLCO: "CLBZZX",
+};
+
+/**
+ * The QuantHub product code for an instrument's quoted structures (Spread, Fly, ...):
+ * its `structure_exchange_code` when set, else the built-in default for its outright
+ * code, else the outright code itself (Brent: "CO" -> "COQ27-U27").
+ */
+export function quantHubStructureCode(instrument: Instrument): string {
+  const own = instrument.structure_exchange_code?.trim();
+  if (own) return own.toUpperCase();
+  const outright = quantHubProductCode(instrument);
+  return DEFAULT_STRUCTURE_PRODUCT_CODE[outright] ?? outright;
+}
+
 /** Just the month+year suffix of a QuantHub code, e.g. "Nov26" -> "X26". */
 function monthYearSuffix(monthLabel: string): string | undefined {
   const date = parseMonthLabel(monthLabel);

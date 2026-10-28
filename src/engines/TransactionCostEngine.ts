@@ -23,7 +23,8 @@ export const DEFAULT_TC_PER_OUTRIGHT_RT: Record<string, number> = {
  * Every active execution (entry OR exit) is one side, so a lot pays half the
  * round-turn rate when it is entered and the other half when it is exited —
  * a position still open has paid its entry half already. No exit cost is
- * projected for lots still open. A fill marked `tc_waived` costs nothing.
+ * projected for lots still open. Lots transferred out to another trade
+ * (`transfer_out`) cost nothing in this one, entry side included.
  *
  * "Outrights per lot" for a leg is how many outright contract-lots one lot of
  * it trades: 1 for an outright month; for a Structure-kind quote (e.g. a
@@ -54,26 +55,46 @@ export class TransactionCostEngine {
     return total > 0 ? total : 1;
   }
 
-  /** TC for one execution (one side): qty x outrights/lot x half the RT rate, in $. */
+  /**
+   * TC for one execution (one side): qty x outrights/lot x half the RT rate, in $.
+   * `chargedQuantity` overrides the lots charged (used to leave out the lots of an
+   * entry that were transferred to another trade).
+   */
   static executionCost(
     execution: Execution,
     contract: Contract | undefined,
     instrument: Instrument | undefined,
-    templatesById: Map<UUID, StructureTemplate>
+    templatesById: Map<UUID, StructureTemplate>,
+    chargedQuantity?: number
   ): number {
     if ((execution.status ?? "Active") !== "Active") return 0;
-    if (execution.tc_waived) return 0; // bookkeeping fill (e.g. a position moved between trades) — nothing was traded
+    if (execution.tc_waived || execution.transfer_out) return 0; // nothing was really traded
     const halfRate = this.ratePerOutrightRT(instrument) / 2;
-    return execution.quantity * this.outrightsPerLot(contract, templatesById) * halfRate;
+    return Math.max(chargedQuantity ?? execution.quantity, 0) * this.outrightsPerLot(contract, templatesById) * halfRate;
   }
 
-  /** Total TC for a leg's executions. The leg's own contract's instrument sets the rate (so inter-product legs each pay their own product's rate). */
+  /**
+   * Total TC for a leg's executions. The leg's own contract's instrument sets the
+   * rate (so inter-product legs each pay their own product's rate).
+   *
+   * Lots a transfer-out exit moved to another trade cost nothing here at all: the
+   * exit itself is free AND the entry side of those same lots is taken back out —
+   * the other trade pays for them when it re-enters them.
+   */
   static legCost(
     executions: Execution[],
     contract: Contract | undefined,
     instrument: Instrument | undefined,
     templatesById: Map<UUID, StructureTemplate>
   ): number {
-    return executions.reduce((sum, e) => sum + this.executionCost(e, contract, instrument, templatesById), 0);
+    const transferredByEntry = new Map<UUID, number>();
+    for (const e of executions) {
+      if ((e.status ?? "Active") !== "Active" || !e.transfer_out || !e.closes_entry_group_id) continue;
+      transferredByEntry.set(e.closes_entry_group_id, (transferredByEntry.get(e.closes_entry_group_id) ?? 0) + e.quantity);
+    }
+    return executions.reduce((sum, e) => {
+      const transferred = e.execution_type === "Entry" ? (transferredByEntry.get(e.entry_group_id) ?? 0) : 0;
+      return sum + this.executionCost(e, contract, instrument, templatesById, e.quantity - transferred);
+    }, 0);
   }
 }

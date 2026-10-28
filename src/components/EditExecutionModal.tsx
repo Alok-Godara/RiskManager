@@ -3,7 +3,7 @@ import type { Execution, LegSnapshot } from "../types/domain";
 import { StructureEngine } from "../engines/StructureEngine";
 import { tickSizeForStructure } from "../utils/instrumentLookup";
 import { Modal } from "./Modal";
-import { NoTcCheckbox } from "./NoTcCheckbox";
+import { TransferOutCheckbox } from "./TransferOutCheckbox";
 import { describeDbError } from "../utils/dbError";
 
 function toLocalInputValue(iso: string): string {
@@ -31,7 +31,7 @@ export function EditExecutionModal({
   const [timestamp, setTimestamp] = useState(toLocalInputValue(execution.timestamp));
   const [notes, setNotes] = useState(execution.notes ?? "");
   const [reason, setReason] = useState("");
-  const [noTc, setNoTc] = useState(Boolean(execution.tc_waived));
+  const [transferOut, setTransferOut] = useState(Boolean(execution.transfer_out));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   // Sizes the price field's scroll/spinner step to the instrument's real
@@ -61,7 +61,7 @@ export function EditExecutionModal({
         notes: notes || undefined,
         reason: reason || undefined,
         // Only sent when you changed it, so an ordinary correction never touches the column.
-        tc_waived: noTc !== Boolean(execution.tc_waived) ? noTc : undefined,
+        transfer_out: transferOut !== Boolean(execution.transfer_out) ? transferOut : undefined,
       });
       onSaved();
       onClose();
@@ -122,11 +122,7 @@ export function EditExecutionModal({
           <label>Notes (optional)</label>
           <input value={notes} onChange={(e) => setNotes(e.target.value)} />
         </div>
-        <NoTcCheckbox
-          checked={noTc}
-          onChange={setNoTc}
-          help="No transaction cost is charged on this fill — for a position moved between trades, where nothing was really traded."
-        />
+        {execution.execution_type !== "Entry" && <TransferOutCheckbox checked={transferOut} onChange={setTransferOut} />}
         <div className="form-row">
           <label>Reason for correction (optional, kept in audit trail)</label>
           <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. fat-fingered price" />

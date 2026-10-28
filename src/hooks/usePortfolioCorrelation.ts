@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Contract, CorrelationWindow, Instrument, PortfolioConcentrationAnalysis, StructureSnapshot, StructureTemplate, UUID, ValueAtRiskResult } from "../types/domain";
 import { CORRELATION_WINDOWS } from "../types/domain";
 import { CorrelationEngine, VAR_LOOKBACK_DAYS, type DailySeriesPoint } from "../engines/CorrelationEngine";
+import { holdsPosition } from "../utils/tradeDirection";
 import { buildCorrelationContext, getCorrelationSettings, historyTradingDaysFor } from "../services/settlementData/correlationContext";
 
 /** Settlements publish once/day — this just picks up a newly-published one without a manual reload. (Hourly, and only while the page is visible: each pass reads stored history from the database.) */
@@ -65,7 +66,8 @@ export function usePortfolioCorrelation(
   const [valueAtRisk, setValueAtRisk] = useState<ValueAtRiskResult | undefined>();
   const [nonce, setNonce] = useState(0);
 
-  const openStructures = useMemo(() => snapshots.filter((s) => s.structure.status !== "Fully Closed"), [snapshots]);
+  // Only trades that hold lots — an open-but-flat trade has no position to correlate.
+  const openStructures = useMemo(() => snapshots.filter(holdsPosition), [snapshots]);
 
   // Includes each leg's CURRENT net_quantity, not just its fixed contract_id
   // — position size/direction changes (a new entry, a partial exit) must

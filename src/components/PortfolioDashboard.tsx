@@ -232,7 +232,7 @@ export function PortfolioDashboard({
             <InfoTip>
               Net Realized P&amp;L plus the gross Unrealized P&amp;L of the open lots. The transaction costs already paid are inside
               Net Realized; no cost for exiting the open lots is deducted — it is only charged when you actually exit (and not at
-              all if you mark that exit "without transaction cost").
+              all if the lots are transferred to another trade).
             </InfoTip>
           </div>
           <div className={`stat-value ${pnlClass(summary.net_pnl)}`}>{fmtMoney(summary.net_pnl)}</div>

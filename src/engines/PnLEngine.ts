@@ -61,17 +61,36 @@ export class PnLEngine {
     return position.net_quantity * currentPrice;
   }
 
-  /** One bulk read of everything snapshots are built from (a handful of requests, not one per leg). */
-  static async loadStaticData(): Promise<StaticSnapshotData> {
-    const [structures, legs, contracts, instruments, templates, positions, executions] = await Promise.all([
+  // The contract list is by far the biggest table (every month of every instrument,
+  // years ahead) and almost never changes, so timed refreshes reuse it.
+  private static contractsCache: { at: number; contracts: Contract[] } | null = null;
+  private static readonly CONTRACTS_TTL_MS = 60 * 60_000;
+
+  /**
+   * One bulk read of everything snapshots are built from (a handful of requests, not
+   * one per leg). With `cachedContracts` (the timed background refreshes) the contract
+   * list is reused for up to an hour — unless a leg points at a contract it does not
+   * contain, which means a new one was created and it is re-read straight away. Anything
+   * you do yourself re-reads it (the default).
+   */
+  static async loadStaticData(opts?: { cachedContracts?: boolean }): Promise<StaticSnapshotData> {
+    const cache = this.contractsCache;
+    const useCache = Boolean(opts?.cachedContracts && cache && Date.now() - cache.at < this.CONTRACTS_TTL_MS);
+    const [structures, legs, fetchedContracts, instruments, templates, positions, executions] = await Promise.all([
       repository.getStructures(),
       repository.getAllLegs(),
-      repository.getContracts(),
+      useCache ? Promise.resolve(cache!.contracts) : repository.getContracts(),
       repository.getInstruments(),
       repository.getStructureTemplates(),
       repository.getPositions(),
       repository.getAllExecutions(),
     ]);
+    let contracts = fetchedContracts;
+    if (useCache) {
+      const known = new Set(contracts.map((c) => c.id));
+      if (legs.some((l) => !known.has(l.contract_id))) contracts = await repository.getContracts();
+    }
+    if (contracts !== cache?.contracts) this.contractsCache = { at: Date.now(), contracts };
     return { structures, legs, contracts, instruments, templates, positions, executions };
   }
 

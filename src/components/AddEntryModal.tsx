@@ -7,8 +7,8 @@ import { CorrelationEngine } from "../engines/CorrelationEngine";
 import { repository } from "../data";
 import { Modal } from "./Modal";
 import { fmtPrice } from "../utils/format";
+import { structurePrice } from "../utils/structurePrice";
 import { NewTradeCorrelationPreview } from "./NewTradeCorrelationPreview";
-import { NoTcCheckbox } from "./NoTcCheckbox";
 import { describeDbError } from "../utils/dbError";
 
 export function AddEntryModal({
@@ -47,7 +47,6 @@ export function AddEntryModal({
   const [legPrices, setLegPrices] = useState<Record<string, number>>(
     Object.fromEntries(legs.map((l) => [l.leg.id, l.current_price ?? 0]))
   );
-  const [noTc, setNoTc] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   // Sizes the price fields' scroll/spinner step to the instrument's real
@@ -106,7 +105,6 @@ export function AddEntryModal({
           side: effSide(leg.leg.id, leg.leg.ratio),
           risk_allocated: first && riskAllocated !== "" ? Number(riskAllocated) : undefined,
           entry_group_id: entryGroupId,
-          tc_waived: noTc,
         });
         first = false;
       }
@@ -202,6 +200,19 @@ export function AddEntryModal({
               </tr>
             ))}
           </tbody>
+          <tfoot>
+            <tr>
+              <td colSpan={4}>
+                <strong>Structure</strong> <span className="muted">(Σ ratio × leg price)</span>
+              </td>
+              <td className="muted">
+                <strong>{fmtPrice(structurePrice(legs, (l) => l.current_price))}</strong>
+              </td>
+              <td>
+                <strong>{fmtPrice(structurePrice(legs, (l) => legPrices[l.leg.id]))}</strong>
+              </td>
+            </tr>
+          </tfoot>
         </table>
         <p className="helper-text">
           Structure Lots and Direction prefill every leg — then change any leg's lots or side. Set a leg to 0 to skip it (a single-leg
@@ -220,12 +231,6 @@ export function AddEntryModal({
             use your own.
           </p>
         </div>
-
-        <NoTcCheckbox
-          checked={noTc}
-          onChange={setNoTc}
-          help="Tick this when nothing is really being traded — e.g. this entry is a position moved over from another trade — so no entry transaction cost is charged."
-        />
 
         <NewTradeCorrelationPreview
           candidateWeights={candidateWeights}

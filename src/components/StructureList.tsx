@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { StructureSnapshot } from "../types/domain";
 import { fmtMoney, fmtPrice, pnlClass, statusLabel } from "../utils/format";
+import { structurePrice } from "../utils/structurePrice";
 import { tradeDirection, tradeStatusBadgeClass } from "../utils/tradeDirection";
 import { InfoTip } from "./InfoTip";
 import { IconSearch } from "./icons";
@@ -137,8 +138,7 @@ function ColumnFilter({
  * and QuantHub structure quotes. Undefined if any leg has no live price yet.
  */
 function livePrice(s: StructureSnapshot): number | undefined {
-  if (s.legs.length === 0 || s.legs.some((l) => l.current_price === undefined)) return undefined;
-  return s.legs.reduce((sum, l) => sum + l.leg.ratio * (l.current_price as number), 0);
+  return structurePrice(s.legs, (l) => l.current_price);
 }
 
 /** The most recent entry (opening or adding to a position) on this trade; a trade never entered counts from the day it was created. */

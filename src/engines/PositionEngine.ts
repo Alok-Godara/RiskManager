@@ -57,7 +57,9 @@ export class PositionEngine {
     const realize = (exec: Execution, lot: { quantity: number; price: number }, closeQty: number) => {
       const wasLong = lot.quantity > 0;
       const pnlPerUnit = wasLong ? exec.price - lot.price : lot.price - exec.price;
-      const pnl = pnlPerUnit * closeQty * dollarPerPriceUnit;
+      // Lots transferred to another trade realize nothing here — their profit or
+      // loss is booked in the trade that re-enters them (at the original price).
+      const pnl = exec.transfer_out ? 0 : pnlPerUnit * closeQty * dollarPerPriceUnit;
       realizedPnl += pnl;
       realizedFromExits.push({ execution: exec, quantity: closeQty, entryPrice: lot.price, exitPrice: exec.price, realizedPnl: pnl });
       lot.quantity = wasLong ? lot.quantity - closeQty : lot.quantity + closeQty;

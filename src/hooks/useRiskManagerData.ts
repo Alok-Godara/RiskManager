@@ -58,10 +58,13 @@ export function useRiskManagerData() {
     setPortfolio(PortfolioEngine.summarize(snaps));
   }, []);
 
-  /** Full read of everything. Called on load, after any change you make, and on a slow timer. */
-  const reload = useCallback(async () => {
+  /**
+   * Full read of everything. Called on load, after any change you make, and on a slow timer.
+   * The timer passes `cached: true` so the big, rarely-changing contract list is reused.
+   */
+  const reload = useCallback(async (opts?: { cached?: boolean }) => {
     const [staticData, prices, audit] = await Promise.all([
-      PnLEngine.loadStaticData(),
+      PnLEngine.loadStaticData({ cachedContracts: opts?.cached === true }),
       repository.getMarketPrices(),
       repository.getAuditEvents(AUDIT_EVENT_LIMIT),
     ]);
@@ -132,7 +135,7 @@ export function useRiskManagerData() {
   useEffect(() => {
     if (!isCloudConfigured) return;
     const id = window.setInterval(() => {
-      if (!pageHidden()) reload();
+      if (!pageHidden()) reload({ cached: true });
     }, FULL_RELOAD_MS);
     return () => window.clearInterval(id);
   }, [reload]);
@@ -141,7 +144,7 @@ export function useRiskManagerData() {
   useEffect(() => {
     const onVisible = () => {
       if (pageHidden() || !staticRef.current) return;
-      if (Date.now() - lastFullReloadRef.current > FULL_RELOAD_MS) reload();
+      if (Date.now() - lastFullReloadRef.current > FULL_RELOAD_MS) reload({ cached: true });
       else refreshPrices();
     };
     document.addEventListener("visibilitychange", onVisible);

@@ -5,6 +5,7 @@ import { CorrelationEngine, type DailySeriesPoint } from "../engines/Correlation
 import { usePortfolioCorrelation } from "../hooks/usePortfolioCorrelation";
 import { sortContractsChronologically } from "../utils/contractGen";
 import { fmtMoney } from "../utils/format";
+import { holdsPosition } from "../utils/tradeDirection";
 import { fmtQh } from "../utils/correlationFormat";
 import { InfoTip } from "./InfoTip";
 import { PortfolioRead } from "./PortfolioRead";
@@ -144,7 +145,7 @@ export function CorrelationPanel({
 
   const analysis = analysesByWindow?.[window];
   const snapshotsById = useMemo(() => new Map(snapshots.map((s) => [s.structure.id, s])), [snapshots]);
-  const openSnapshots = useMemo(() => snapshots.filter((s) => s.structure.status !== "Fully Closed"), [snapshots]);
+  const openSnapshots = useMemo(() => snapshots.filter(holdsPosition), [snapshots]);
   const instrumentSymbolById = useMemo(() => new Map(instruments.map((i) => [i.id, i.symbol])), [instruments]);
   const contractsById = useMemo(() => new Map(contracts.map((c) => [c.id, c])), [contracts]);
 

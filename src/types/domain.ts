@@ -54,6 +54,11 @@ export interface Instrument {
   // services/settlementData/client.ts). Defaults to `symbol` when unset,
   // same pattern as `exchange_code` for QuantHub.
   refdata_symbol?: string;
+  // QuantHub product code for this instrument's quoted Spread / Fly structures,
+  // when the exchange lists them under a different product than the outrights
+  // (CLBZ outrights are "WTCLCO…", its quoted calendar spreads "CLBZZX…").
+  // Blank = same as the outright code (or the built-in default for it).
+  structure_exchange_code?: string;
   // Exchange transaction cost, $ per OUTRIGHT lot per ROUND TURN (1 buy + 1
   // sell). The exchange charges per outright, so a spread = 2x this, a fly =
   // 4x, a D-fly = 8x (see engines/TransactionCostEngine.ts). Falls back to the
@@ -199,9 +204,15 @@ export interface Execution {
   // whole history — see engines/PositionEngine.ts. Undefined for Entry-type
   // executions.
   closes_entry_group_id?: UUID;
-  // True when this fill is bookkeeping only — e.g. a fly moved out of one trade
-  // and into another, where nothing was really traded — so it is charged no
-  // transaction cost (TransactionCostEngine.executionCost). Absent = charged.
+  // Set ONLY on an exit: the lots it closes are being TRANSFERRED to another
+  // trade, not really exited. They leave this trade as if they had never been in
+  // it — no P&L is realized on them (PositionEngine) and no transaction cost,
+  // entry side or exit side, is counted for them (TransactionCostEngine). The
+  // other trade then re-enters them at the original entry price and carries its
+  // own costs and P&L from there.
+  transfer_out?: boolean;
+  // Legacy (an earlier "without transaction cost" tick-box): this one fill is
+  // charged nothing. No longer set by the app; still honored if present.
   tc_waived?: boolean;
 
   status: ExecutionStatus;
@@ -417,6 +428,8 @@ export interface EntrySnapshot {
   closed_quantity: number; // exited from this entry specifically (entry-scoped, not FIFO — see PositionEngine)
   avg_exit_price?: number; // composite exit price, qty-weighted across this entry's own exits; undefined until closed_quantity > 0
   unrealized_pnl: number; // based on open_quantity only
+  // Some of this entry's lots were transferred to another trade (an exit marked transfer_out) — their P&L and costs are not counted here.
+  has_transfer_out: boolean;
   realized_pnl: number; // sum of RealizedPnLEvent rows from exits that closed this entry, in $ (see PositionEngine's tick-value conversion)
   // Composite price level (same sum(ratio_i * price_i) convention as avg_price)
   // at which this entry's loss would equal risk_allocated. Undefined if no

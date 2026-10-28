@@ -50,8 +50,6 @@ export interface NewEntryInput {
   // Shared across every leg's Execution created by the same Add Entry
   // submission — see Execution.entry_group_id / engines/EntryEngine.ts.
   entry_group_id: UUID;
-  // Charge no transaction cost for this fill (see Execution.tc_waived).
-  tc_waived?: boolean;
 }
 
 export interface ExitInput {
@@ -68,9 +66,10 @@ export interface ExitInput {
   // (distinct from closes_entry_group_id above — this is the EXIT's own
   // batch id, not the entry being closed).
   entry_group_id: UUID;
-  // Charge no transaction cost for this exit (see Execution.tc_waived) — e.g. a
-  // fly leaving this trade to be re-entered in another, with nothing really traded.
-  tc_waived?: boolean;
+  // The lots are being transferred to another trade rather than exited: no P&L and
+  // no transaction cost (entry or exit side) is counted for them here — see
+  // Execution.transfer_out.
+  transfer_out?: boolean;
 }
 
 export interface EditExecutionInput {
@@ -83,8 +82,8 @@ export interface EditExecutionInput {
   timestamp?: string;
   notes?: string;
   reason?: string;
-  // pass true/false to change whether this fill is charged transaction cost; omit to leave as is
-  tc_waived?: boolean;
+  // pass true/false to mark / unmark an exit as a transfer to another trade; omit to leave as is
+  transfer_out?: boolean;
 }
 
 export interface DeleteExecutionInput {
@@ -377,8 +376,6 @@ export class StructureEngine {
       timestamp: new Date().toISOString(),
       notes: input.notes,
       entry_group_id: input.entry_group_id,
-      // Only written when set, so databases without the tc_waived column keep working for normal fills.
-      ...(input.tc_waived ? { tc_waived: true } : {}),
       status: "Active",
     };
     await repository.addExecution(execution);
@@ -447,7 +444,8 @@ export class StructureEngine {
       notes: input.notes,
       entry_group_id: input.entry_group_id,
       closes_entry_group_id: input.closes_entry_group_id,
-      ...(input.tc_waived ? { tc_waived: true } : {}),
+      // Only written when set, so databases without the transfer_out column keep working for normal exits.
+      ...(input.transfer_out ? { transfer_out: true } : {}),
       status: "Active",
     };
     await repository.addExecution(execution);
@@ -539,8 +537,15 @@ export class StructureEngine {
       notes: input.notes ?? original.notes,
       // Always carried forward — a correction stays part of the same entry.
       entry_group_id: original.entry_group_id,
-      // Carried forward unless the correction changes it; false is stored as absent.
-      tc_waived: input.tc_waived !== undefined ? (input.tc_waived ? true : undefined) : original.tc_waived,
+      // Carried forward unless the correction changes it; false is stored as absent. Exits only.
+      transfer_out:
+        original.execution_type === "Entry"
+          ? undefined
+          : input.transfer_out !== undefined
+            ? input.transfer_out
+              ? true
+              : undefined
+            : original.transfer_out,
       status: "Active",
       edited_from_execution_id: original.id,
       edited_to_execution_id: undefined,

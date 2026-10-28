@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Contract, CorrelationWindow, Instrument, NewTradeCorrelationAnalysis, StructureSnapshot, StructureTemplate, UUID } from "../types/domain";
 import { CORRELATION_WINDOWS } from "../types/domain";
 import { CorrelationEngine } from "../engines/CorrelationEngine";
+import { holdsPosition } from "../utils/tradeDirection";
 import { buildCandidateSeries, buildCorrelationContext, getCorrelationSettings, historyTradingDaysFor } from "../services/settlementData/correlationContext";
 
 export interface NewTradeCorrelationState {
@@ -35,7 +36,7 @@ export function useNewTradeCorrelation(
   const [analysesByWindow, setAnalysesByWindow] = useState<Record<CorrelationWindow, NewTradeCorrelationAnalysis> | null>(null);
   const [thresholds, setThresholds] = useState({ correlation: 0.7, concentration: 0.65 });
 
-  const openStructures = useMemo(() => snapshots.filter((s) => s.structure.status !== "Fully Closed"), [snapshots]);
+  const openStructures = useMemo(() => snapshots.filter(holdsPosition), [snapshots]);
   // Includes each leg's CURRENT net_quantity (not just contract_id) — see
   // the matching comment in usePortfolioCorrelation.ts.
   const structureSignature = useMemo(

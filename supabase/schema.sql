@@ -29,6 +29,7 @@ create table if not exists instruments (
   name text not null,
   exchange_code text,
   refdata_symbol text,
+  structure_exchange_code text,
   tc_per_outright_rt double precision,
   tick_size double precision not null,
   tick_value double precision not null,
@@ -145,7 +146,9 @@ create table if not exists executions (
   -- this exit is closing. Exits are entry-scoped, not FIFO across a leg's
   -- whole history — see engines/PositionEngine.ts.
   closes_entry_group_id uuid,
-  -- True = no transaction cost charged on this fill (a position moved between trades). See migrations/011_execution_tc_waived.sql.
+  -- True on an exit that TRANSFERS its lots to another trade: no P&L and no transaction cost counted for them here. See migrations/012_execution_transfer_out.sql.
+  transfer_out boolean,
+  -- Legacy: no transaction cost on this one fill (migrations/011_execution_tc_waived.sql). No longer set by the app.
   tc_waived boolean,
   status text not null default 'Active' check (status in ('Active', 'Edited', 'Deleted')),
   edited_from_execution_id uuid,

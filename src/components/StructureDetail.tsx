@@ -4,6 +4,7 @@ import { EntryEngine, type EntryInputs } from "../engines/EntryEngine";
 import { StructureEngine } from "../engines/StructureEngine";
 import { contractLifecycleStatus } from "../utils/contractExpiry";
 import { fmtMoney, fmtPrice, pnlClass, statusLabel } from "../utils/format";
+import { structurePrice } from "../utils/structurePrice";
 import { tradeStatusBadgeClass } from "../utils/tradeDirection";
 import { IconChevronLeft, IconPencil } from "./icons";
 import { AddEntryModal } from "./AddEntryModal";
@@ -422,7 +423,7 @@ export function StructureDetail({
             <InfoTip>
               Net Realized P&amp;L plus the gross Unrealized P&amp;L of the open lots. The costs already paid are inside Net
               Realized; no cost for exiting the open lots is deducted — it is only charged if and when you exit them (and not at
-              all if you tick "without transaction cost" on that exit).
+              all if the lots are transferred to another trade).
             </InfoTip>
           </div>
           <div className={`stat-value ${pnlClass(netPnl)}`}>{fmtMoney(netPnl)}</div>
@@ -595,6 +596,17 @@ export function StructureDetail({
             );
           })}
         </tbody>
+        <tfoot>
+          <tr>
+            <td colSpan={4}>
+              <strong>Structure</strong> <span className="muted">(Σ ratio × leg price)</span>
+            </td>
+            <td>
+              <strong>{fmtPrice(structurePrice(legs, (l) => l.current_price))}</strong>
+            </td>
+            <td colSpan={3}></td>
+          </tr>
+        </tfoot>
       </table>
 
       <h3>Entries</h3>
@@ -628,8 +640,8 @@ export function StructureDetail({
                     {expandedEntries.has(en.entry_group_id) ? "▾" : "▸"}
                   </span>{" "}
                   {new Date(en.timestamp).toLocaleString()}
-                  {en.legs.some((l) => l.execution.tc_waived) && (
-                    <span className="muted" title="No transaction cost charged on this entry"> · no TC</span>
+                  {en.has_transfer_out && (
+                    <span className="muted" title="Some lots of this entry were transferred to another trade — no P&L or transaction cost counted for them here"> · transferred</span>
                   )}
                 </td>
                 <td className={en.side === "Long" ? "pnl-pos" : en.side === "Short" ? "pnl-neg" : "muted"}>{en.side}</td>
@@ -744,7 +756,9 @@ export function StructureDetail({
                   <td>{contractLabelByLeg[ex.structure_leg_id] ?? "—"}</td>
                   <td>
                     {ex.execution_type}
-                    {ex.tc_waived && <span className="muted" title="No transaction cost charged on this fill"> · no TC</span>}
+                    {ex.transfer_out && (
+                      <span className="muted" title="Transferred to another trade — no P&L or transaction cost counted here"> · transferred out</span>
+                    )}
                   </td>
                   <td className={ex.side === "Long" ? "pnl-pos" : "pnl-neg"}>{ex.side}</td>
                   <td>{ex.quantity}</td>

@@ -3,7 +3,6 @@ import { repository } from "./index";
 import { parseMonthLabel, buildRollingContracts, sortContractsChronologically } from "../utils/contractGen";
 import { lastTradingDay } from "../utils/contractExpiry";
 
-const ROLLING_MONTHS = 24;
 
 /**
  * One-time, idempotent backfill for records written before V2/V3 added new
@@ -103,8 +102,8 @@ export async function runMigrations(): Promise<void> {
 }
 
 /**
- * Keep every instrument's contract list covering a rolling 24-month window
- * from today, generating only whatever months are missing. Idempotent and
+ * Keep every instrument's contract list covering a rolling window of months
+ * from today (as far out as its price feeds go — see contractHorizonMonths), generating only whatever months are missing. Idempotent and
  * cheap (a handful of reads/writes) — safe to call on every load, so the
  * window keeps extending forward as time passes without manual action.
  */
@@ -128,10 +127,9 @@ async function topUpRollingContracts(): Promise<void> {
     const existing = sortContractsChronologically(await repository.getContractsByInstrument(instrument.id));
     const existingLabels = new Set(existing.map((c) => c.month_label));
 
-    const wanted = buildRollingContracts(instrument, ROLLING_MONTHS, now);
+    const wanted = buildRollingContracts(instrument, undefined, now);
     const missing = wanted.filter((c) => !existingLabels.has(c.month_label));
-    for (const c of missing) {
-      await repository.upsertContract(c);
-    }
+    // One request for all the missing months (a first run after the window was lengthened adds dozens).
+    if (missing.length > 0) await repository.upsertContracts(missing);
   }
 }
