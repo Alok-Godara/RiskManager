@@ -199,6 +199,10 @@ export interface Execution {
   // whole history — see engines/PositionEngine.ts. Undefined for Entry-type
   // executions.
   closes_entry_group_id?: UUID;
+  // True when this fill is bookkeeping only — e.g. a fly moved out of one trade
+  // and into another, where nothing was really traded — so it is charged no
+  // transaction cost (TransactionCostEngine.executionCost). Absent = charged.
+  tc_waived?: boolean;
 
   status: ExecutionStatus;
   edited_from_execution_id?: UUID; // set on the replacement row
@@ -360,8 +364,7 @@ export interface LegSnapshot {
   current_price?: number;
   unrealized_pnl: number;
   market_value: number;
-  transaction_cost: number; // $ TC paid so far on this leg: half-RT rate on every active entry AND exit execution
-  projected_exit_cost: number; // $ TC still to pay to exit this leg's open lots at the exit half-rate
+  transaction_cost: number; // $ TC paid so far on this leg: half-RT rate on every active entry AND exit execution (waived fills excepted)
 }
 
 export interface StructureSnapshot {
@@ -373,11 +376,9 @@ export interface StructureSnapshot {
   remaining_risk_capacity: number;
   total_transaction_cost: number; // $ TC paid so far (half-RT on each entry and exit fill)
   net_realized_pnl: number; // total_realized_pnl - total_transaction_cost
-  // TC that exiting every open lot now would still cost (exit half-rate x open
-  // outright lots) — not paid yet, so it is NOT in net_realized_pnl.
-  projected_exit_cost: number;
-  // What the trade is worth if everything were exited at the current prices:
-  // net_realized_pnl + unrealized - projected_exit_cost.
+  // Net realized (after the costs actually paid so far) + unrealized at current
+  // prices. No cost for exiting the open lots is deducted — it is only charged
+  // when an exit really happens (and not at all on a waived fill).
   net_pnl: number;
   // ISO timestamp of every active ENTRY fill on this structure's legs (the
   // opening of a position or an addition to it) — what the Structures list's
@@ -444,8 +445,7 @@ export interface PortfolioSummary {
   total_transaction_cost: number;
   net_realized_pnl: number; // gross realized - transaction costs
   total_unrealized_pnl: number; // gross, open lots at live prices
-  net_pnl: number; // net realized + unrealized - TC still to pay to exit open lots
-  projected_exit_cost: number; // TC still to pay to exit every open lot
+  net_pnl: number; // net realized + unrealized (gross)
   total_dollar_risk: number; // sum of the initial risk given to every OPEN trade
   risk_utilized: number; // active risk: risk allocated to entries that still have open lots
   remaining_risk_capacity: number; // total_dollar_risk - risk_utilized

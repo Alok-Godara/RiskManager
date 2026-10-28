@@ -25,8 +25,8 @@ export function PerformanceSection({ snapshots }: { snapshots: StructureSnapshot
           Performance
           <InfoTip>
             Every number here counts each trade once, by its net P&amp;L (after all transaction costs). "Closed trades" uses only
-            trades you have closed — their final result. "All trades" also includes trades still open, at what they would make if
-            you exited now. Trades you never entered are left out.
+            trades you have closed — their final result. "All trades" also includes trades still open, at their current net P&amp;L
+            (open lots at live prices). Trades you never entered are left out.
           </InfoTip>
         </span>
         <span className="button-row" style={{ margin: 0, gap: 6 }}>

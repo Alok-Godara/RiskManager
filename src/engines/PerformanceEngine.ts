@@ -6,7 +6,7 @@ export type PerformanceScope = "closed" | "all";
 export interface TradeResult {
   id: string;
   name: string;
-  /** What the trade made or lost, after all transaction costs (net P&L — for an open trade, as if exited now). */
+  /** What the trade made or lost, after the transaction costs paid (net P&L — for an open trade, its open lots at live prices). */
   net: number;
   /** net ÷ the initial risk given to the trade; undefined when no initial risk was set. */
   r_multiple?: number;
@@ -45,7 +45,7 @@ const CENT = 0.005;
  *
  *   "closed" — only trades you closed: the trades with a final, settled result.
  *   "all"    — every trade you have entered, open ones at their current net P&L
- *              (what they would be if exited now). Trades never entered are skipped.
+ *              (their open lots at live prices). Trades never entered are skipped.
  */
 export class PerformanceEngine {
   static results(snapshots: StructureSnapshot[], scope: PerformanceScope): TradeResult[] {

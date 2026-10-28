@@ -145,6 +145,8 @@ create table if not exists executions (
   -- this exit is closing. Exits are entry-scoped, not FIFO across a leg's
   -- whole history — see engines/PositionEngine.ts.
   closes_entry_group_id uuid,
+  -- True = no transaction cost charged on this fill (a position moved between trades). See migrations/011_execution_tc_waived.sql.
+  tc_waived boolean,
   status text not null default 'Active' check (status in ('Active', 'Edited', 'Deleted')),
   edited_from_execution_id uuid,
   edited_to_execution_id uuid,

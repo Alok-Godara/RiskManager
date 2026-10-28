@@ -246,8 +246,7 @@ export function StructureDetail({
   const stopLots = stopEntries.reduce((sum, e) => sum + e.open_quantity, 0);
   const structureAvgStop = stopLots > 0 ? stopEntries.reduce((sum, e) => sum + e.open_quantity * (e.stop_loss_price as number), 0) / stopLots : undefined;
 
-  // Net P&L: what the trade is worth if everything were exited right now — realized after
-  // the costs paid so far, plus unrealized, minus the exit-side cost still to pay on open lots.
+  // Net P&L: realized after the costs paid so far, plus unrealized (gross). No exit cost is projected.
   const netPnl = snapshot.net_pnl;
 
   function handleChanged() {
@@ -421,17 +420,13 @@ export function StructureDetail({
           <div className="stat-label">
             Net P&amp;L{" "}
             <InfoTip>
-              What you would end up with if you exited everything at the current prices: Net Realized P&amp;L, plus the gross
-              Unrealized P&amp;L of the open lots, minus the transaction cost still to pay to exit those lots (the exit side — the
-              entry side is already inside Net Realized). So the number already has both sides of the cost taken off.
+              Net Realized P&amp;L plus the gross Unrealized P&amp;L of the open lots. The costs already paid are inside Net
+              Realized; no cost for exiting the open lots is deducted — it is only charged if and when you exit them (and not at
+              all if you tick "without transaction cost" on that exit).
             </InfoTip>
           </div>
           <div className={`stat-value ${pnlClass(netPnl)}`}>{fmtMoney(netPnl)}</div>
-          <div className="stat-sub">
-            {snapshot.projected_exit_cost > 0
-              ? `After ${fmtMoney(snapshot.projected_exit_cost)} exit TC on open lots`
-              : "Net realized + unrealized"}
-          </div>
+          <div className="stat-sub">Net realized + unrealized</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">
@@ -633,6 +628,9 @@ export function StructureDetail({
                     {expandedEntries.has(en.entry_group_id) ? "▾" : "▸"}
                   </span>{" "}
                   {new Date(en.timestamp).toLocaleString()}
+                  {en.legs.some((l) => l.execution.tc_waived) && (
+                    <span className="muted" title="No transaction cost charged on this entry"> · no TC</span>
+                  )}
                 </td>
                 <td className={en.side === "Long" ? "pnl-pos" : en.side === "Short" ? "pnl-neg" : "muted"}>{en.side}</td>
                 <td>{fmtPrice(en.avg_price)}</td>
@@ -744,7 +742,10 @@ export function StructureDetail({
                 <tr key={ex.id} className={ex.status === "Edited" ? "execution-edited" : ex.status === "Deleted" ? "execution-deleted" : ""}>
                   <td>{new Date(ex.timestamp).toLocaleString()}</td>
                   <td>{contractLabelByLeg[ex.structure_leg_id] ?? "—"}</td>
-                  <td>{ex.execution_type}</td>
+                  <td>
+                    {ex.execution_type}
+                    {ex.tc_waived && <span className="muted" title="No transaction cost charged on this fill"> · no TC</span>}
+                  </td>
                   <td className={ex.side === "Long" ? "pnl-pos" : "pnl-neg"}>{ex.side}</td>
                   <td>{ex.quantity}</td>
                   <td>{fmtPrice(ex.price)}</td>

@@ -22,7 +22,8 @@ export const DEFAULT_TC_PER_OUTRIGHT_RT: Record<string, number> = {
  * Rule: a fill costs  quantity x outrights-per-lot x (round-turn rate / 2).
  * Every active execution (entry OR exit) is one side, so a lot pays half the
  * round-turn rate when it is entered and the other half when it is exited —
- * a position still open has paid its entry half already.
+ * a position still open has paid its entry half already. No exit cost is
+ * projected for lots still open. A fill marked `tc_waived` costs nothing.
  *
  * "Outrights per lot" for a leg is how many outright contract-lots one lot of
  * it trades: 1 for an outright month; for a Structure-kind quote (e.g. a
@@ -61,24 +62,9 @@ export class TransactionCostEngine {
     templatesById: Map<UUID, StructureTemplate>
   ): number {
     if ((execution.status ?? "Active") !== "Active") return 0;
+    if (execution.tc_waived) return 0; // bookkeeping fill (e.g. a position moved between trades) — nothing was traded
     const halfRate = this.ratePerOutrightRT(instrument) / 2;
     return execution.quantity * this.outrightsPerLot(contract, templatesById) * halfRate;
-  }
-
-  /**
-   * TC still to pay to exit `openLots` of this leg's contract: the exit
-   * half-rate x outrights-per-lot x open lots. Entry and exit are charged
-   * identically (half the round-turn rate each), so this is exactly what
-   * closing the position at this moment would add to the costs.
-   */
-  static projectedExitCost(
-    openLots: number,
-    contract: Contract | undefined,
-    instrument: Instrument | undefined,
-    templatesById: Map<UUID, StructureTemplate>
-  ): number {
-    if (!(openLots > 0)) return 0;
-    return openLots * this.outrightsPerLot(contract, templatesById) * (this.ratePerOutrightRT(instrument) / 2);
   }
 
   /** Total TC for a leg's executions. The leg's own contract's instrument sets the rate (so inter-product legs each pay their own product's rate). */

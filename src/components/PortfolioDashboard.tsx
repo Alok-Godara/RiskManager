@@ -230,15 +230,13 @@ export function PortfolioDashboard({
           <div className="stat-label">
             Net P&amp;L
             <InfoTip>
-              What you would end up with if you exited every open position at current prices: Net Realized P&amp;L plus the gross
-              Unrealized P&amp;L, minus the transaction cost still to pay to exit the open lots (their entry side is already inside
-              Net Realized).
+              Net Realized P&amp;L plus the gross Unrealized P&amp;L of the open lots. The transaction costs already paid are inside
+              Net Realized; no cost for exiting the open lots is deducted — it is only charged when you actually exit (and not at
+              all if you mark that exit "without transaction cost").
             </InfoTip>
           </div>
           <div className={`stat-value ${pnlClass(summary.net_pnl)}`}>{fmtMoney(summary.net_pnl)}</div>
-          <div className="stat-sub">
-            {summary.projected_exit_cost > 0 ? `After ${fmtMoney(summary.projected_exit_cost)} exit TC on open lots` : "Net realized + unrealized"}
-          </div>
+          <div className="stat-sub">Net realized + unrealized</div>
         </div>
       </div>
 

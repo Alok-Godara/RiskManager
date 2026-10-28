@@ -8,6 +8,8 @@ import { repository } from "../data";
 import { Modal } from "./Modal";
 import { fmtPrice } from "../utils/format";
 import { NewTradeCorrelationPreview } from "./NewTradeCorrelationPreview";
+import { NoTcCheckbox } from "./NoTcCheckbox";
+import { describeDbError } from "../utils/dbError";
 
 export function AddEntryModal({
   snapshot,
@@ -45,6 +47,7 @@ export function AddEntryModal({
   const [legPrices, setLegPrices] = useState<Record<string, number>>(
     Object.fromEntries(legs.map((l) => [l.leg.id, l.current_price ?? 0]))
   );
+  const [noTc, setNoTc] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   // Sizes the price fields' scroll/spinner step to the instrument's real
@@ -103,13 +106,14 @@ export function AddEntryModal({
           side: effSide(leg.leg.id, leg.leg.ratio),
           risk_allocated: first && riskAllocated !== "" ? Number(riskAllocated) : undefined,
           entry_group_id: entryGroupId,
+          tc_waived: noTc,
         });
         first = false;
       }
       onSaved();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to add entry");
+      setError(describeDbError(err, "Failed to add entry"));
     } finally {
       setSaving(false);
     }
@@ -216,6 +220,12 @@ export function AddEntryModal({
             use your own.
           </p>
         </div>
+
+        <NoTcCheckbox
+          checked={noTc}
+          onChange={setNoTc}
+          help="Tick this when nothing is really being traded — e.g. this entry is a position moved over from another trade — so no entry transaction cost is charged."
+        />
 
         <NewTradeCorrelationPreview
           candidateWeights={candidateWeights}
