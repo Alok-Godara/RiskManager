@@ -82,7 +82,14 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     // Only whether a token exists reaches the client, never its value.
     define: { __QH_CONFIGURED__: JSON.stringify(Boolean(token)) },
-    server: { proxy },
+    server: {
+      proxy,
+      // The project lives in a OneDrive folder, whose file-change events Windows
+      // delivers unreliably — the always-on dev server then kept serving an OLD copy
+      // of a file next to NEW ones (blank screens, "X is not defined"). Polling for
+      // changes instead is slightly more work but never misses one.
+      watch: { usePolling: true, interval: 500 },
+    },
     preview: { proxy },
   }
 })
