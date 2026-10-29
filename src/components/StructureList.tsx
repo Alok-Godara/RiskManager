@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { StructureSnapshot } from "../types/domain";
 import { fmtMoney, fmtPrice, pnlClass, statusLabel } from "../utils/format";
 import { structurePrice } from "../utils/structurePrice";
-import { tradeDirection, tradeStatusBadgeClass } from "../utils/tradeDirection";
+import { netStructureLots, tradeDirection, tradeStatusBadgeClass } from "../utils/tradeDirection";
 import { InfoTip } from "./InfoTip";
 import { IconSearch } from "./icons";
 import { StructureEngine } from "../engines/StructureEngine";
@@ -144,6 +144,12 @@ function livePrice(s: StructureSnapshot): number | undefined {
 /** The most recent entry (opening or adding to a position) on this trade; a trade never entered counts from the day it was created. */
 function latestEntryTime(s: StructureSnapshot): number {
   return Math.max(...activityDates(s).map((d) => new Date(d).getTime()));
+}
+
+/** Lots for display: signed, at most 2 decimals, no trailing zeros ("+3", "-2.5"). */
+function fmtLots(n: number): string {
+  const rounded = Math.round(n * 100) / 100;
+  return rounded > 0 ? `+${rounded}` : String(rounded);
 }
 
 /** List order: 0 = open position (long/short), 1 = flat, 2 = closed. */
@@ -375,13 +381,13 @@ export function StructureList({
                     {statusLabel(s.structure.status)}
                   </span>
                   {s.structure.status !== "Fully Closed" &&
-                    (s.open_entry_count > 0 ? (
+                    (Math.abs(netStructureLots(s)) > 1e-9 ? (
                       <span
                         className="muted"
                         style={{ marginLeft: 6 }}
-                        title={`${s.open_entry_count} entr${s.open_entry_count === 1 ? "y" : "ies"} with open lots`}
+                        title={`Total open quantity of this trade: ${fmtLots(netStructureLots(s))} structure lot(s), all entries added together (+ long, - short)`}
                       >
-                        {s.open_entry_count} open
+                        {fmtLots(netStructureLots(s))} lots
                       </span>
                     ) : (
                       <span className="muted" style={{ marginLeft: 6 }} title="No open lots — press Close Trade when you are done">
