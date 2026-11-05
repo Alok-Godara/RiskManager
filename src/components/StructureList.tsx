@@ -213,7 +213,8 @@ export function StructureList({
 
   const visible = useMemo(() => {
     const now = new Date();
-    const needle = filters.search.trim().toLowerCase();
+    // Not trimmed: a trailing space is part of the search, so "CL " finds CL trades but not CLBZ.
+    const needle = filters.search.toLowerCase();
     return snapshots
       .filter((s) => {
         const closed = s.structure.status === "Fully Closed";
