@@ -158,6 +158,8 @@ class MarketDataServiceImpl {
   private listeners = new Set<UpdateListener>();
   /** What was last written per contract, to skip rewriting an unchanged price. */
   private lastWritten = new Map<string, { price: number; at: number }>();
+  /** Newest quote per contract this process fetched itself (the worker's alert checks read these instead of re-reading the database). */
+  private latestPrices = new Map<string, MarketPrice>();
   private statusListeners = new Set<Listener>();
   private pollMs = 4000;
   private status: MarketDataStatus = {
@@ -173,6 +175,11 @@ class MarketDataServiceImpl {
   private sourceTag = "";
   /** Browser tabs: skip our own fetch while the background worker is keeping prices fresh. */
   private deferToWorker = false;
+
+  /** Newest quote per contract fetched by this process (empty until the first successful tick). */
+  getLatestPrices(): MarketPrice[] {
+    return Array.from(this.latestPrices.values());
+  }
 
   setSourceTag(tag: string) {
     this.sourceTag = tag;
@@ -256,6 +263,7 @@ class MarketDataServiceImpl {
           source: (quote.source ?? this.provider.name) + this.sourceTag,
           timestamp,
         };
+        this.latestPrices.set(contract.id, marketPrice);
         const previous = this.lastWritten.get(contract.id);
         const changed = !previous || previous.price !== quote.price;
         if (changed) anyChanged = true;

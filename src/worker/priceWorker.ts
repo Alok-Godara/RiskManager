@@ -11,12 +11,19 @@
  * For always-on use, scripts/install-background-services.ps1 registers it to start
  * at Windows logon and restart if it ever exits. Needs QH_API_TOKEN (and the
  * VITE_SUPABASE_* values) in .env.local, same as the dev server.
+ *
+ * Also sends the Teams alerts (stop loss / profit target / correlation) when
+ * TEAMS_WEBHOOK_URL is set in .env.local — see alertMonitor.ts. Correlation reads the
+ * settlement feed directly: REFDATA_API_URL (default http://refdataapi) and an optional
+ * REFDATA_API_TOKEN.
  */
 import { isCloudConfigured } from "../data";
 import { MarketDataService, WORKER_SOURCE_TAG } from "../services/MarketDataService";
 import { QuantHubProvider } from "../services/quantHub/QuantHubProvider";
 import { configureQuantHubClient, QUANTHUB_WORKER_REQUESTS_PER_MINUTE, quantHubPollIntervalMs } from "../services/quantHub/client";
 import { getRequiredContracts } from "../services/requiredContracts";
+import { configureSettlementClient } from "../services/settlementData/client";
+import { startAlertMonitor } from "./alertMonitor";
 
 // Minimal typing for the few Node globals used (the app's tsconfig is
 // browser-only and doesn't pull in @types/node).
@@ -103,6 +110,18 @@ function shutdown() {
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+
+const teamsWebhookUrl = process.env.TEAMS_WEBHOOK_URL?.trim();
+if (teamsWebhookUrl) {
+  configureSettlementClient({
+    baseUrl: process.env.REFDATA_API_URL?.trim() || "http://refdataapi",
+    bearerToken: process.env.REFDATA_API_TOKEN?.trim() || undefined,
+  });
+  const reloadMinutes = Number(process.env.ALERT_RELOAD_MINUTES);
+  startAlertMonitor(teamsWebhookUrl, log, Number.isFinite(reloadMinutes) && reloadMinutes > 0 ? reloadMinutes : undefined);
+} else {
+  log("TEAMS_WEBHOOK_URL is not set — Teams alerts are off");
+}
 
 log(`price worker starting — polling QuantHub every ${(pollMs / 1000).toFixed(1)}s`);
 MarketDataService.start(getRequiredContracts, pollMs);

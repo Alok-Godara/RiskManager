@@ -5,13 +5,10 @@ import { fmtQh } from "../utils/correlationFormat";
 import { InfoTip } from "./InfoTip";
 import { ExecutionErrorCard } from "./ExecutionErrorCard";
 import { PerformanceSection } from "./PerformanceSection";
+import { CORRELATION_STATUS_WINDOW, NEAR_STOP_FRACTION, PROFIT_TARGET_MULTIPLE } from "../services/alerts/alertRules";
 
-/** The correlation window the Dashboard's diversified/concentrated read is taken from. */
-const STATUS_WINDOW = 60;
-/** An open entry is "near its stop" once its loss has used this share of the risk allocated to it (1 = stop hit). */
-const NEAR_STOP_FRACTION = 0.8;
-/** A trade is flagged once its net profit reaches this multiple of its initial risk. */
-const PROFIT_TARGET_MULTIPLE = 1.5;
+/** The correlation window the Dashboard's diversified/concentrated read is taken from (shared with the Teams alerts). */
+const STATUS_WINDOW = CORRELATION_STATUS_WINDOW;
 
 /**
  * Portfolio-level "diversified or concentrated" verdict, from the same

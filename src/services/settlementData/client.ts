@@ -62,7 +62,17 @@ export class SettlementDataError extends Error {
   }
 }
 
-const API_BASE = (import.meta.env?.VITE_REFDATA_API_BASE ?? "/refdata-api").replace(/\/+$/, "");
+let apiBase = (import.meta.env?.VITE_REFDATA_API_BASE ?? "/refdata-api").replace(/\/+$/, "");
+let extraHeaders: Record<string, string> = {};
+
+/**
+ * For the headless worker only (Node has no same-origin proxy): call the settlement API
+ * directly at an absolute URL, with an optional Bearer token. The browser never calls this.
+ */
+export function configureSettlementClient({ baseUrl, bearerToken }: { baseUrl: string; bearerToken?: string }) {
+  apiBase = baseUrl.replace(/\/+$/, "");
+  extraHeaders = bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {};
+}
 
 // Field name candidates, case-insensitive. The first in each list is the
 // confirmed real field; the rest are kept as a fallback in case the API's
@@ -198,8 +208,8 @@ export function normalizeSettlementResponse(json: Json, allowedSymbols?: Readonl
 export async function fetchSettlementPrices(sinceDate: string, allowedSymbols?: ReadonlySet<string>): Promise<Record<string, number>> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}/Catalog/Instrument/SettlementPrice?date=${encodeURIComponent(sinceDate)}`, {
-      headers: { accept: "application/json" },
+    response = await fetch(`${apiBase}/Catalog/Instrument/SettlementPrice?date=${encodeURIComponent(sinceDate)}`, {
+      headers: { accept: "application/json", ...extraHeaders },
     });
   } catch (err) {
     throw new SettlementDataError("network", err instanceof Error ? err.message : "Network request failed");
